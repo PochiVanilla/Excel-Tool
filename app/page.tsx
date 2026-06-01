@@ -64,6 +64,88 @@ const getCleanedRangeText = (row: any, c1: number, c2: number) => {
   return textArray.join('|');
 };
 
+const shiftWorksheetMerges = (ws: any, rowStart: number, numRows: number) => {
+  try {
+    const merges = ws.model.merges || [];
+    const newMerges: string[] = [];
+
+    const decodeCell = (addr: string) => {
+      const match = addr.match(/^([A-Z]+)([0-9]+)$/);
+      if (!match) return { row: 0, col: 0 };
+      const colStr = match[1];
+      const row = parseInt(match[2], 10);
+      let col = 0;
+      for (let i = 0; i < colStr.length; i++) {
+        col = col * 26 + (colStr.charCodeAt(i) - 64);
+      }
+      return { row, col };
+    };
+
+    const encodeCell = (row: number, col: number) => {
+      let colStr = "";
+      let temp = col;
+      while (temp > 0) {
+        let r = (temp - 1) % 26;
+        colStr = String.fromCharCode(65 + r) + colStr;
+        temp = Math.floor((temp - 1) / 26);
+      }
+      return `${colStr}${row}`;
+    };
+
+    for (let mergeStr of merges) {
+      const parts = mergeStr.split(':');
+      if (parts.length !== 2) continue;
+      
+      const startCell = decodeCell(parts[0]);
+      const endCell = decodeCell(parts[1]);
+      
+      let sRow = startCell.row;
+      let eRow = endCell.row;
+      
+      // 1. Nằm hoàn toàn trong phạm vi bị xóa -> Bỏ qua
+      if (sRow >= rowStart && eRow < rowStart + numRows) {
+        continue;
+      }
+      
+      // 2. Nằm hoàn toàn phía dưới phạm vi bị xóa -> Dịch chuyển lên
+      if (sRow >= rowStart + numRows) {
+        sRow -= numRows;
+        eRow -= numRows;
+        newMerges.push(`${encodeCell(sRow, startCell.col)}:${encodeCell(eRow, endCell.col)}`);
+      } 
+      // 3. Nằm hoàn toàn phía trên phạm vi bị xóa -> Giữ nguyên
+      else if (eRow < rowStart) {
+        newMerges.push(mergeStr);
+      }
+      // 4. Bị cắt giao -> Thu nhỏ lại
+      else {
+        if (sRow < rowStart && eRow >= rowStart + numRows) {
+          eRow -= numRows;
+          newMerges.push(`${encodeCell(sRow, startCell.col)}:${encodeCell(eRow, endCell.col)}`);
+        } else if (sRow < rowStart) {
+          eRow = rowStart - 1;
+          if (eRow >= sRow) {
+            newMerges.push(`${encodeCell(sRow, startCell.col)}:${encodeCell(eRow, endCell.col)}`);
+          }
+        }
+      }
+    }
+
+    // Xóa tất cả và merge lại bằng tọa độ mới đã căn chỉnh
+    ws.model.merges = [];
+    ws._merges = {};
+    for (let newMerge of newMerges) {
+      try {
+        ws.mergeCells(newMerge);
+      } catch (e) {
+        console.error("Lỗi khi merge lại ô trong ExcelJS:", newMerge, e);
+      }
+    }
+  } catch (err) {
+    console.error("Lỗi khi đồng bộ ô gộp (merges) trong ExcelJS:", err);
+  }
+};
+
 const matchSingleRow = (row: any, patternRowText: string, c1: number, c2: number) => {
   if (!row) return false;
   let pCells = patternRowText.split('|').map(s => s.trim()).filter(s => s !== "");
@@ -121,6 +203,7 @@ export default function Home() {
   const [showPanel, setShowPanel] = useState<boolean>(false);
   const [statusText, setStatusText] = useState<string>('(Hãy chọn file Excel để xem)');
   const [hasFile, setHasFile] = useState<boolean>(false);
+  const [workbookObj, setWorkbookObj] = useState<any>(null);
 
   // State quản lý logic cắt gộp
   const [currentMode, setCurrentMode] = useState<'HEADER' | 'FOOTER'>('HEADER');
@@ -230,6 +313,21 @@ export default function Home() {
     setLoadingMsg("Đang vẽ bảng tính... Vui lòng chờ...");
     
     setTimeout(() => {
+      // 1. Đọc và nạp file vào ExcelJS Workbook để giữ nguyên định dạng, cột, nét vẽ gốc
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const arrayBuffer = event.target?.result as ArrayBuffer;
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.load(arrayBuffer);
+          setWorkbookObj(workbook);
+        } catch (err) {
+          console.error("Lỗi khi load ExcelJS Workbook gốc:", err);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+
+      // 2. Chuyển đổi và hiển thị lên Luckysheet
       LuckyExcel.transformExcelToLucky(file, function(exportJson: any) {
         if(exportJson.sheets == null || exportJson.sheets.length == 0) { 
           setLoadingMsg(''); 
@@ -261,29 +359,16 @@ export default function Home() {
   // XỬ LÝ XUẤT FILE EXCEL
   // ==========================================
   const handleExport = async () => {
+    if (!workbookObj) {
+      alert("Không tìm thấy dữ liệu workbook gốc. Vui lòng tải lại tệp và thực hiện thao tác.");
+      return;
+    }
+
     setLoadingMsg("Đang đóng gói dữ liệu thành file Excel...");
     
     setTimeout(async () => {
       try {
-        let sheets = luckysheet.getluckysheetfile();
-        let workbook = new ExcelJS.Workbook();
-        
-        sheets.forEach((sheet: any) => {
-           let worksheet = workbook.addWorksheet(sheet.name || 'Sheet1');
-           if(sheet.data) {
-             for(let r = 0; r < sheet.data.length; r++) {
-               let rowData = sheet.data[r];
-               if(!rowData) continue;
-               for(let c = 0; c < rowData.length; c++) {
-                 if(rowData[c] && rowData[c].v !== undefined) {
-                   worksheet.getCell(r+1, c+1).value = (rowData[c].m !== undefined) ? rowData[c].m : rowData[c].v;
-                 }
-               }
-             }
-           }
-        });
-
-        const buffer = await workbook.xlsx.writeBuffer();
+        const buffer = await workbookObj.xlsx.writeBuffer();
         saveAs(new Blob([buffer]), "Du_Lieu_Da_Xu_Ly.xlsx");
         setStatusText("✅ Tải xuống thành công!");
       } catch(err) {
@@ -506,6 +591,22 @@ export default function Home() {
           luckysheet.deleteRow(rowStart, rowEnd);
         }
 
+        // Xóa đồng thời các dòng này trong ExcelJS Workbook gốc để đồng bộ dữ liệu xuất ra
+        if (workbookObj) {
+          try {
+            const activeSheetIndex = luckysheet.getluckysheetfile().findIndex((s: any) => s.status === 1);
+            const ws = workbookObj.worksheets[activeSheetIndex >= 0 ? activeSheetIndex : 0];
+            for (let block of deleteBlocks) {
+              const startRowExcel = block.start + 1; // ExcelJS là 1-indexed nên cần cộng 1
+              ws.spliceRows(startRowExcel, block.len);
+              // Đồng bộ điều chỉnh dịch chuyển tọa độ các ô đã gộp (merged cells) phía dưới
+              shiftWorksheetMerges(ws, startRowExcel, block.len);
+            }
+          } catch (err) {
+            console.error("Lỗi khi xóa dòng đồng bộ trong ExcelJS:", err);
+          }
+        }
+
         let rowNumbers = sortedRows.map(r => r + 1).reverse().join(', '); // Hiển thị tăng dần
         const labelMode = isHeaderMode ? 'Header' : 'Footer';
         setStatusText(`✅ Đã cắt gọt thành công! Đã xóa và dồn ${rowsToDelete.size} hàng.`);
@@ -601,6 +702,22 @@ export default function Home() {
           let rowStart = block.start;
           let rowEnd = block.start + block.len - 1;
           luckysheet.deleteRow(rowStart, rowEnd);
+        }
+
+        // Xóa đồng thời các dòng này trong ExcelJS Workbook gốc để đồng bộ dữ liệu xuất ra
+        if (workbookObj) {
+          try {
+            const activeSheetIndex = luckysheet.getluckysheetfile().findIndex((s: any) => s.status === 1);
+            const ws = workbookObj.worksheets[activeSheetIndex >= 0 ? activeSheetIndex : 0];
+            for (let block of deleteBlocks) {
+              const startRowExcel = block.start + 1; // ExcelJS là 1-indexed nên cần cộng 1
+              ws.spliceRows(startRowExcel, block.len);
+              // Đồng bộ điều chỉnh dịch chuyển tọa độ các ô đã gộp (merged cells) phía dưới
+              shiftWorksheetMerges(ws, startRowExcel, block.len);
+            }
+          } catch (err) {
+            console.error("Lỗi khi xóa dòng đồng bộ trong ExcelJS:", err);
+          }
         }
 
         setStatusText(`🧹 Đã dọn dẹp thành công! Đã xóa và dồn ${rowsToDelete.size} hàng trống.`);
