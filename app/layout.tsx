@@ -3,7 +3,7 @@ import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Giao diện Google Sheets - AI Cắt Gộp & Xuất Excel",
+  title: "Excel Tool",
   description: "Công cụ xử lý Excel tốc độ cao",
 };
 
