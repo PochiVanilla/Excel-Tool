@@ -210,6 +210,83 @@ const matchFooter = (sheetData: any[], r: number, fuzzyPattern: string[], c1: nu
   return true;
 };
 
+const extractPolytexComponents = (text: string) => {
+  if (!text) return { itemCode: "", description: "" };
+
+  // Tương đương công thức Excel =LEFT(cell, FIND(CHAR(10), cell) - 1)
+  // Lấy dòng đầu tiên của ô (trước ký tự xuống dòng \n / CHAR(10)) làm Mã Item
+  const lines = text.split(/\r?\n/);
+  let itemCode = lines[0] ? lines[0].trim() : text.trim();
+
+  let description = "";
+  const percentIndex = text.indexOf('%');
+  if (percentIndex !== -1) {
+    let startIndex = percentIndex;
+    while (startIndex > 0 && /[\d.]/.test(text[startIndex - 1])) {
+      startIndex--;
+    }
+    
+    const gm2Match = text.slice(percentIndex).match(/g\/m2/i);
+    if (gm2Match && gm2Match.index !== undefined) {
+      const endIndex = percentIndex + gm2Match.index + "g/m2".length;
+      description = text.substring(startIndex, endIndex).replace(/\s+/g, ' ').trim();
+    }
+  }
+
+  return { itemCode, description };
+};
+
+const isJunkOrSubHeaderRow = (rowCells: any[], c1: number, c2: number, aggColIndices?: number[], mode: 'NORMAL' | 'RPAC' = 'NORMAL') => {
+  if (!rowCells) return true;
+
+  let isSeqNumbers = true;
+  let cellCount = 0;
+
+  for (let c = c1; c <= c2; c++) {
+    let cell = rowCells[c];
+    if (cell) {
+      let text = extractTextWithHyperlinkFilter(cell, mode).trim();
+      if (text !== "") {
+        cellCount++;
+        let numMatch = text.match(/^\(?([1-9]\d?)\)?$/);
+        if (!numMatch) {
+          isSeqNumbers = false;
+        }
+      }
+    }
+  }
+
+  if (cellCount === 0) return true;
+
+  // 1. Dòng chỉ chứa chỉ số thứ tự cột 1, 2, 3, 4, 5... -> Luôn xóa
+  if (isSeqNumbers && cellCount >= 2) return true;
+
+  // 2. Kiểm tra nếu các ô còn lại trên dòng (Số lượng, Đơn giá, Thành tiền, ĐVT) bị RỖNG hoàn toàn -> Mới xóa
+  let hasDataInRow = false;
+  for (let c = c1; c <= c2; c++) {
+    let cell = rowCells[c];
+    if (cell) {
+      let text = extractTextWithHyperlinkFilter(cell, mode).trim();
+      if (text !== "") {
+        let valStr = text.replace(/,/g, '');
+        let parsed = parseFloat(valStr);
+        if (!isNaN(parsed) && parsed !== 0) {
+          hasDataInRow = true;
+          break;
+        }
+        if (text.length <= 15 && !text.includes(":") && !text.toLowerCase().includes("hóa đơn") && !text.toLowerCase().includes("tỷ giá")) {
+          if (["yard", "pcs", "kg", "m", "set", "cuộn", "cái", "bộ", "hộp", "bao", "tấm"].some(u => text.toLowerCase().includes(u))) {
+            hasDataInRow = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return !hasDataInRow;
+};
+
 export default function Home() {
   const [loadingMsg, setLoadingMsg] = useState<string>('');
   const [showPanel, setShowPanel] = useState<boolean>(false);
@@ -229,12 +306,62 @@ export default function Home() {
   const [selectionStats, setSelectionStats] = useState<{ average: number, count: number, sum: number } | null>(null);
 
   // State quản lý Pivot Table cho Polytex
+  // State quản lý Pivot Table kiểu Excel PivotTable Fields (động theo tiêu đề gốc của bảng)
+  const [pivot5Fields, setPivot5Fields] = useState<{ id: string; name: string; defaultCategory: 'rows' | 'values' }[]>([
+    { id: 'item', name: 'Item (#)', defaultCategory: 'rows' },
+    { id: 'description', name: 'Mô tả', defaultCategory: 'rows' },
+    { id: 'quantity', name: 'Số lượng(Quantity)', defaultCategory: 'values' },
+    { id: 'price', name: 'Đơn giá(Unit price)', defaultCategory: 'values' },
+    { id: 'amount', name: 'Thành tiền(Amount)', defaultCategory: 'values' },
+  ]);
+
   const [showPivotModal, setShowPivotModal] = useState<boolean>(false);
   const [pivotModalPos, setPivotModalPos] = useState({ x: 0, y: 0 });
-  const [pivotColumns, setPivotColumns] = useState<{ index: number; name: string; isNumeric: boolean }[]>([]);
-  const [selectedPivotGroupCols, setSelectedPivotGroupCols] = useState<number[]>([]);
-  const [selectedPivotAggCols, setSelectedPivotAggCols] = useState<number[]>([]);
-  const [splitPolytexCode, setSplitPolytexCode] = useState<boolean>(true);
+  const [checkedPivotFields, setCheckedPivotFields] = useState<string[]>(['item', 'description', 'quantity', 'price', 'amount']);
+  const [rowsPivotFields, setRowsPivotFields] = useState<string[]>(['item', 'description']);
+  const [valuesPivotFields, setValuesPivotFields] = useState<string[]>(['quantity', 'price', 'amount']);
+  const [draggedField, setDraggedField] = useState<{ id: string; source: 'rows' | 'values' } | null>(null);
+  const [dragOverZone, setDragOverZone] = useState<'rows' | 'values' | null>(null);
+
+  const moveRowField = (index: number, direction: 'up' | 'down') => {
+    const newArr = [...rowsPivotFields];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newArr.length) return;
+    const temp = newArr[index];
+    newArr[index] = newArr[targetIndex];
+    newArr[targetIndex] = temp;
+    setRowsPivotFields(newArr);
+  };
+
+  const moveValueField = (index: number, direction: 'up' | 'down') => {
+    const newArr = [...valuesPivotFields];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newArr.length) return;
+    const temp = newArr[index];
+    newArr[index] = newArr[targetIndex];
+    newArr[targetIndex] = temp;
+    setValuesPivotFields(newArr);
+  };
+
+  const handleDropToZone = (targetZone: 'rows' | 'values') => {
+    if (!draggedField) return;
+    const { id: fId, source: sourceZone } = draggedField;
+
+    if (sourceZone !== targetZone) {
+      if (targetZone === 'rows') {
+        setValuesPivotFields(valuesPivotFields.filter(id => id !== fId));
+        if (!rowsPivotFields.includes(fId)) setRowsPivotFields([...rowsPivotFields, fId]);
+      } else {
+        setRowsPivotFields(rowsPivotFields.filter(id => id !== fId));
+        if (!valuesPivotFields.includes(fId)) setValuesPivotFields([...valuesPivotFields, fId]);
+      }
+    }
+    setDraggedField(null);
+    setDragOverZone(null);
+  };
+
+  const [pivotColMap, setPivotColMap] = useState<{ qtyCol: number; priceCol: number; amountCol: number; descCol: number }>({ qtyCol: -1, priceCol: -1, amountCol: -1, descCol: -1 });
+  const [skipHeaderJunkRows, setSkipHeaderJunkRows] = useState<boolean>(true);
   const [pivotResult, setPivotResult] = useState<{ headers: string[]; rows: any[] } | null>(null);
   const [pivotActiveRange, setPivotActiveRange] = useState<any>(null);
 
@@ -384,65 +511,74 @@ export default function Home() {
     // @ts-ignore
     let sheetData = luckysheet.getSheetData();
     
-    let cols: { index: number; name: string; isNumeric: boolean }[] = [];
-    let groupDefault: number[] = [];
-    let aggDefault: number[] = [];
-    
-    let hasHashCodes = false;
-    
+    let qtyCol = -1;
+    let priceCol = -1;
+    let amountCol = -1;
+    let descCol = -1;
+
+    // Quét dòng tiêu đề r1 để nhận diện các cột
     for (let c = c1; c <= c2; c++) {
       let cell = sheetData[r1][c];
-      let name = "";
       if (cell) {
-        name = extractTextWithHyperlinkFilter(cell, 'NORMAL').trim();
+        let name = extractTextWithHyperlinkFilter(cell, 'NORMAL').toLowerCase();
+        if (name.includes("số lượng") || name.includes("quantity") || name.includes("qty")) qtyCol = c;
+        else if (name.includes("đơn giá") || name.includes("unit price") || name.includes("price")) priceCol = c;
+        else if (name.includes("thành tiền") || name.includes("amount")) amountCol = c;
+        else if (name.includes("tên hàng") || name.includes("mô tả") || name.includes("description")) descCol = c;
       }
-      if (!name) {
-        name = `Cột ${getColLetter(c)}`;
-      }
-      
-      // Kiểm tra xem cột có chứa dữ liệu số không
-      let numericCount = 0;
-      let nonNumericCount = 0;
+    }
+
+    // Dự phòng tìm theo các cột số nếu quét chữ tiêu đề không khớp
+    let numericCols: number[] = [];
+    for (let c = c1; c <= c2; c++) {
+      let numCount = 0;
       for (let r = r1 + 1; r <= r2; r++) {
         if (!sheetData[r]) continue;
-        let cellData = sheetData[r][c];
-        if (cellData) {
-          let textVal = extractTextWithHyperlinkFilter(cellData, 'NORMAL').trim();
-          let valStr = textVal.replace(/,/g, '');
-          if (valStr !== "") {
-            let parsed = parseFloat(valStr);
-            if (!isNaN(parsed)) {
-              numericCount++;
-            } else {
-              nonNumericCount++;
-            }
-          }
-          
-          if (textVal.match(/^#\d+/) || textVal.includes("\n#") || textVal.includes("\r#")) {
-            hasHashCodes = true;
-          }
+        let cell = sheetData[r][c];
+        if (cell && cell.v !== undefined && cell.v !== null) {
+          let val = parseFloat(cell.v.toString().replace(/,/g, ''));
+          if (!isNaN(val)) numCount++;
         }
       }
-      
-      let isNumeric = numericCount > 0 && numericCount >= nonNumericCount;
-      cols.push({ index: c, name, isNumeric });
-      
-      if (isNumeric) {
-        aggDefault.push(c);
-      } else {
-        groupDefault.push(c);
-      }
+      if (numCount > 0) numericCols.push(c);
     }
-    
-    // Thêm cột ảo cho mã "#" nếu tìm thấy
-    if (hasHashCodes) {
-      cols.push({ index: -100, name: "Mã số (#)", isNumeric: false });
-      groupDefault.push(-100);
+
+    if (qtyCol === -1 && numericCols.length >= 1) qtyCol = numericCols[0];
+    if (priceCol === -1 && numericCols.length >= 2) priceCol = numericCols[1];
+    if (amountCol === -1 && numericCols.length >= 3) amountCol = numericCols[2];
+    if (descCol === -1) descCol = (c1 + 1 <= c2) ? c1 + 1 : c1;
+
+    // Trích xuất tên tiêu đề gốc trực tiếp từ dòng r1
+    let qtyName = "Số lượng(Quantity)";
+    if (qtyCol !== -1 && sheetData[r1][qtyCol]) {
+      let t = extractTextWithHyperlinkFilter(sheetData[r1][qtyCol], 'NORMAL').replace(/\s+/g, ' ').trim();
+      if (t) qtyName = t;
     }
-    
-    setPivotColumns(cols);
-    setSelectedPivotGroupCols(groupDefault);
-    setSelectedPivotAggCols(aggDefault);
+
+    let priceName = "Đơn giá(Unit price)";
+    if (priceCol !== -1 && sheetData[r1][priceCol]) {
+      let t = extractTextWithHyperlinkFilter(sheetData[r1][priceCol], 'NORMAL').replace(/\s+/g, ' ').trim();
+      if (t) priceName = t;
+    }
+
+    let amountName = "Thành tiền(Amount)";
+    if (amountCol !== -1 && sheetData[r1][amountCol]) {
+      let t = extractTextWithHyperlinkFilter(sheetData[r1][amountCol], 'NORMAL').replace(/\s+/g, ' ').trim();
+      if (t) amountName = t;
+    }
+
+    setPivot5Fields([
+      { id: 'item', name: 'Item (#)', defaultCategory: 'rows' },
+      { id: 'description', name: 'Mô tả', defaultCategory: 'rows' },
+      { id: 'quantity', name: qtyName, defaultCategory: 'values' },
+      { id: 'price', name: priceName, defaultCategory: 'values' },
+      { id: 'amount', name: amountName, defaultCategory: 'values' },
+    ]);
+
+    setPivotColMap({ qtyCol, priceCol, amountCol, descCol });
+    setCheckedPivotFields(['item', 'description', 'quantity', 'price', 'amount']);
+    setRowsPivotFields(['item', 'description']);
+    setValuesPivotFields(['quantity', 'price', 'amount']);
     setPivotActiveRange({ r1, r2, c1, c2 });
     setPivotResult(null);
     setPivotModalPos({ x: 0, y: 0 });
@@ -455,94 +591,135 @@ export default function Home() {
     // @ts-ignore
     let sheetData = luckysheet.getSheetData();
     const { r1, r2, c1, c2 } = pivotActiveRange;
+    const { qtyCol, priceCol, amountCol, descCol } = pivotColMap;
     
-    let groups: { [key: string]: { groupValues: any[], aggValues: { [colIndex: number]: number } } } = {};
+    let groups: { [key: string]: { rowValues: { [fId: string]: string }, aggValues: { [fId: string]: number } } } = {};
+    let lastLineAText = "";
     
     for (let r = r1 + 1; r <= r2; r++) {
       if (!sheetData[r]) continue;
       
-      // Trích xuất mã hash (ví dụ: #1012081)
-      let hashCode = "";
-      for (let c = c1; c <= c2; c++) {
-        let cell = sheetData[r][c];
-        if (cell) {
-          let text = extractTextWithHyperlinkFilter(cell, 'NORMAL');
-          let match = text.match(/#\d+/);
-          if (match) {
-            hashCode = match[0];
+      const isJunkOrSub = isJunkOrSubHeaderRow(sheetData[r], c1, c2, [], 'NORMAL');
+      
+      if (isJunkOrSub) {
+        // Kiểm tra xem dòng r có phải là dòng Line A (chứa tên/mã Item nằm ngay trên dòng B C D E F) không
+        let lineACandidate = "";
+        for (let c = c1; c <= c2; c++) {
+          let cell = sheetData[r][c];
+          if (cell) {
+            let t = extractTextWithHyperlinkFilter(cell, 'NORMAL').trim();
+            if (
+              t !== "" && 
+              !t.toLowerCase().includes("hóa đơn") && 
+              !t.toLowerCase().includes("tỷ giá") && 
+              !t.match(/^\(?([1-9]\d?)\)?$/)
+            ) {
+              lineACandidate = t;
+              break;
+            }
+          }
+        }
+        if (lineACandidate) {
+          const firstLine = lineACandidate.split(/\r?\n/)[0];
+          lastLineAText = firstLine ? firstLine.trim() : lineACandidate.trim();
+        }
+        continue;
+      }
+      
+      // Dòng r là dòng B C D E F (chứa Số lượng, Đơn giá, Thành tiền)
+      let descText = "";
+      if (descCol !== -1 && sheetData[r][descCol]) {
+        descText = extractTextWithHyperlinkFilter(sheetData[r][descCol], 'NORMAL');
+      } else {
+        for (let c = c1; c <= c2; c++) {
+          let t = extractTextWithHyperlinkFilter(sheetData[r][c], 'NORMAL');
+          if (t.includes('%') || t.includes('Fabric') || t.includes('Art')) {
+            descText = t;
             break;
           }
         }
       }
-      
-      let rowGroupValues: any[] = [];
+
+      const comp = extractPolytexComponents(descText);
+
+      // Ưu tiên lấy mã/tên Item từ dòng Line A nằm ngay phía trên (không gán dư thêm dấu #)
+      let itemVal = lastLineAText || comp.itemCode || '';
+
+      let fieldValues: { [key: string]: any } = {
+        item: itemVal,
+        description: comp.description || descText || '',
+        quantity: 0,
+        price: 0,
+        amount: 0
+      };
+
+      if (qtyCol !== -1 && sheetData[r][qtyCol] && sheetData[r][qtyCol].v !== undefined) {
+        fieldValues.quantity = parseFloat(sheetData[r][qtyCol].v.toString().replace(/,/g, '')) || 0;
+      }
+      if (priceCol !== -1 && sheetData[r][priceCol] && sheetData[r][priceCol].v !== undefined) {
+        fieldValues.price = parseFloat(sheetData[r][priceCol].v.toString().replace(/,/g, '')) || 0;
+      }
+      if (amountCol !== -1 && sheetData[r][amountCol] && sheetData[r][amountCol].v !== undefined) {
+        fieldValues.amount = parseFloat(sheetData[r][amountCol].v.toString().replace(/,/g, '')) || 0;
+      }
+
+      // Xây dựng khoá gom nhóm dựa trên các trường có trong rowsPivotFields
+      let rowGroupValues: string[] = [];
       let isRowEmpty = true;
       
-      selectedPivotGroupCols.forEach(colIndex => {
-        if (colIndex === -100) {
-          rowGroupValues.push(hashCode);
-        } else {
-          let cell = sheetData[r][colIndex];
-          let val = "";
-          if (cell) {
-            val = extractTextWithHyperlinkFilter(cell, 'NORMAL');
-            if (splitPolytexCode && hashCode) {
-              val = val.replace(hashCode, "").trim();
-              val = val.replace(/^\s*[\r\n]/gm, "").trim();
-            }
-            if (val !== "") {
-              isRowEmpty = false;
-            }
-          }
-          rowGroupValues.push(val);
-        }
+      rowsPivotFields.forEach(fId => {
+        let val = fieldValues[fId] || '';
+        if (val !== '') isRowEmpty = false;
+        rowGroupValues.push(val);
       });
       
-      if (isRowEmpty && !hashCode) continue;
+      if (isRowEmpty && !fieldValues.quantity && !fieldValues.amount) continue;
       
       let groupKey = JSON.stringify(rowGroupValues);
       
       if (!groups[groupKey]) {
-        groups[groupKey] = {
-          groupValues: rowGroupValues,
-          aggValues: {}
-        };
-        selectedPivotAggCols.forEach(colIndex => {
-          groups[groupKey].aggValues[colIndex] = 0;
+        let rowValObj: { [fId: string]: string } = {};
+        rowsPivotFields.forEach(fId => {
+          rowValObj[fId] = fieldValues[fId] || '';
         });
+
+        let aggValObj: { [fId: string]: number } = {};
+        valuesPivotFields.forEach(fId => {
+          aggValObj[fId] = 0;
+        });
+
+        groups[groupKey] = {
+          rowValues: rowValObj,
+          aggValues: aggValObj
+        };
       }
       
-      selectedPivotAggCols.forEach(colIndex => {
-        let cell = sheetData[r][colIndex];
-        if (cell && cell.v !== undefined && cell.v !== null) {
-          let valStr = cell.v.toString().replace(/,/g, '').trim();
-          let parsed = parseFloat(valStr);
-          if (!isNaN(parsed)) {
-            groups[groupKey].aggValues[colIndex] += parsed;
-          }
-        }
+      valuesPivotFields.forEach(fId => {
+        groups[groupKey].aggValues[fId] += (fieldValues[fId] || 0);
       });
     }
     
+    // Tạo tiêu đề và hàng theo đúng thứ tự checkedPivotFields của người dùng
     let headers: string[] = [];
-    selectedPivotGroupCols.forEach(colIndex => {
-      if (colIndex === -100) {
-        headers.push("Mã số (#)");
-      } else {
-        let headerCol = pivotColumns.find(col => col.index === colIndex);
-        headers.push(headerCol ? headerCol.name : `Cột ${colIndex}`);
+    checkedPivotFields.forEach(fId => {
+      const def = pivot5Fields.find(f => f.id === fId);
+      let name = def ? def.name : fId;
+      if (valuesPivotFields.includes(fId)) {
+        headers.push(`Sum of ${name}`);
+      } else if (rowsPivotFields.includes(fId)) {
+        headers.push(name);
       }
     });
-    selectedPivotAggCols.forEach(colIndex => {
-      let headerCol = pivotColumns.find(col => col.index === colIndex);
-      headers.push(headerCol ? `${headerCol.name} (Tổng)` : `Cột ${colIndex} (Tổng)`);
-    });
-    
+
     let rows = Object.values(groups).map(g => {
-      let rowData = [...g.groupValues];
-      selectedPivotAggCols.forEach(colIndex => {
-        let val = g.aggValues[colIndex];
-        rowData.push(parseFloat(val.toFixed(2)));
+      let rowData: any[] = [];
+      checkedPivotFields.forEach(fId => {
+        if (rowsPivotFields.includes(fId)) {
+          rowData.push(g.rowValues[fId] || '');
+        } else if (valuesPivotFields.includes(fId)) {
+          let val = g.aggValues[fId] || 0;
+          rowData.push(parseFloat(val.toFixed(2)));
+        }
       });
       return rowData;
     });
@@ -554,6 +731,7 @@ export default function Home() {
     if (!pivotResult) return;
     
     try {
+      // 1. Tạo dữ liệu ô cho Sheet mới 'Pivot Polytex' trên Luckysheet
       let luckyData: any[][] = [];
       
       let headerRow = pivotResult.headers.map(h => ({
@@ -562,17 +740,19 @@ export default function Home() {
         fc: "#ffffff",
         bg: "#107c41",
         bl: 1,
-        ht: 1,
-        vt: 1
+        ht: 0, // 0 = Center
+        vt: 0  // 0 = Middle
       }));
       luckyData.push(headerRow);
       
-      pivotResult.rows.forEach((row: any) => {
+      pivotResult.rows.forEach((row: any[], rIdx: number) => {
         let luckyRow = row.map((val: any) => ({
           v: val,
           m: val !== null && val !== undefined ? val.toString() : "",
-          ht: 1,
-          vt: 1
+          bg: rIdx % 2 === 1 ? "#f4f7f5" : "#ffffff",
+          fc: "#000000",
+          ht: typeof val === 'number' ? 2 : 1,
+          vt: 0
         }));
         luckyData.push(luckyRow);
       });
@@ -595,58 +775,77 @@ export default function Home() {
           celldata: celldata
         }
       });
-      
-      alert("Đã tạo và chèn thêm Sheet 'Pivot Polytex' thành công!");
+
+      // 2. Đồng bộ thêm Sheet 'Pivot Polytex' mới này vào ExcelJS workbookObj để khi bấm "💾 Tải Xuống Excel" sẽ có cả 2 Sheet chuẩn đẹp (Giữ nguyên 100% Sheet Hóa đơn gốc)
+      if (workbookObj) {
+        try {
+          let existingWs = workbookObj.getWorksheet("Pivot Polytex");
+          if (existingWs) {
+            workbookObj.removeWorksheet(existingWs.id);
+          }
+
+          const ws = workbookObj.addWorksheet("Pivot Polytex");
+
+          const headerRow = ws.addRow(pivotResult.headers);
+          headerRow.eachCell((cell: any) => {
+            cell.font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+            cell.fill = {
+              type: "pattern",
+              pattern: "solid",
+              fgColor: { argb: "FF107C41" }
+            };
+            cell.alignment = { horizontal: "center", vertical: "middle" };
+            cell.border = {
+              top: { style: 'thin', color: { argb: 'FF000000' } },
+              left: { style: 'thin', color: { argb: 'FF000000' } },
+              bottom: { style: 'medium', color: { argb: 'FF000000' } },
+              right: { style: 'thin', color: { argb: 'FF000000' } }
+            };
+          });
+
+          const dataBorder: any = {
+            top: { style: 'thin', color: { argb: 'FFD2D0CE' } },
+            left: { style: 'thin', color: { argb: 'FFD2D0CE' } },
+            bottom: { style: 'thin', color: { argb: 'FFD2D0CE' } },
+            right: { style: 'thin', color: { argb: 'FFD2D0CE' } }
+          };
+
+          pivotResult.rows.forEach((row, rIdx) => {
+            const addedRow = ws.addRow(row);
+            const isOdd = rIdx % 2 === 1;
+            addedRow.eachCell((cell: any) => {
+              cell.font = { size: 11, color: { argb: "FF000000" } };
+              if (isOdd) {
+                cell.fill = {
+                  type: "pattern",
+                  pattern: "solid",
+                  fgColor: { argb: "FFF4F7F5" }
+                };
+              }
+              cell.alignment = typeof cell.value === 'number' ? { horizontal: "right", vertical: "middle" } : { horizontal: "left", vertical: "middle" };
+              cell.border = dataBorder;
+            });
+          });
+
+          ws.columns.forEach((column: any) => {
+            if (!column) return;
+            let maxLen = 10;
+            column.eachCell?.({ includeEmpty: true }, (cell: any) => {
+              let v = cell.value ? cell.value.toString() : "";
+              if (v.length > maxLen) maxLen = v.length;
+            });
+            column.width = Math.min(maxLen + 4, 50);
+          });
+        } catch (wsErr) {
+          console.error("Lỗi khi thêm sheet Pivot Polytex vào ExcelJS:", wsErr);
+        }
+      }
+
+      setStatusText("✅ Đã xuất bảng Pivot sang Sheet mới 'Pivot Polytex' thành công!");
       setShowPivotModal(false);
     } catch (err: any) {
-      alert("Lỗi khi chèn sheet mới vào Luckysheet: " + err.message);
+      alert("Lỗi khi tạo sheet mới: " + err.message);
     }
-  };
-
-  const handleExportPivotToExcel = async () => {
-    if (!pivotResult) return;
-    
-    setLoadingMsg("Đang đóng gói file Pivot Excel...");
-    
-    setTimeout(async () => {
-      try {
-        const workbook = new ExcelJS.Workbook();
-        const ws = workbook.addWorksheet("Pivot Polytex");
-        
-        const headerRow = ws.addRow(pivotResult.headers);
-        headerRow.eachCell(cell => {
-          cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-          cell.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FF107C41" }
-          };
-          cell.alignment = { horizontal: "center", vertical: "middle" };
-        });
-        
-        pivotResult.rows.forEach(row => {
-          ws.addRow(row);
-        });
-        
-        ws.columns.forEach(column => {
-          if (!column) return;
-          let maxLen = 10;
-          column.eachCell?.({ includeEmpty: true }, cell => {
-            let val = cell.value ? cell.value.toString() : "";
-            if (val.length > maxLen) maxLen = val.length;
-          });
-          column.width = Math.min(maxLen + 4, 50);
-        });
-        
-        const buffer = await workbook.xlsx.writeBuffer();
-        saveAs(new Blob([buffer]), "Pivot_Polytex.xlsx");
-        alert("Đã tải xuống file Pivot_Polytex.xlsx thành công!");
-      } catch (err: any) {
-        alert("Lỗi khi xuất file Excel: " + err.message);
-      } finally {
-        setLoadingMsg('');
-      }
-    }, 50);
   };
 
   // ==========================================
@@ -1459,10 +1658,10 @@ export default function Home() {
         </div>
       )}
 
-      {/* 3.1 Bảng điều khiển Pivot Polytex (Floating Pivot Modal) */}
+      {/* 3.1 Bảng điều khiển Pivot Polytex (Excel PivotTable Fields Modal) */}
       {showPivotModal && (
         <div 
-          className="absolute w-[650px] bg-white rounded-lg shadow-2xl z-50 overflow-hidden border border-gray-200 flex flex-col max-h-[85vh]"
+          className="absolute w-[500px] bg-[#f3f2f1] rounded-lg shadow-2xl z-50 overflow-hidden border border-[#c8c8c8] flex flex-col max-h-[90vh] font-sans text-slate-800"
           style={{
             top: '45%',
             left: '50%',
@@ -1472,98 +1671,236 @@ export default function Home() {
           {/* Header để Kéo thả */}
           <div 
             onMouseDown={handlePivotPanelMouseDown}
-            className="bg-sky-800 text-white px-5 py-3 flex justify-between items-center cursor-move select-none shrink-0"
+            className="bg-[#0078d4] text-white px-4 py-2.5 flex justify-between items-center cursor-move select-none shrink-0"
           >
             <div className="flex items-center gap-2">
-              <span>📊</span>
-              <span className="font-bold">Pivot Table Builder (Polytex)</span>
+              <span className="font-bold text-sm">PivotTable Fields</span>
             </div>
-            <button onClick={() => setShowPivotModal(false)} className="text-red-300 font-bold hover:text-red-100 text-lg">×</button>
+            <button onClick={() => setShowPivotModal(false)} className="text-white hover:bg-[#005a9e] rounded px-2 py-0.5 font-bold text-base">✕</button>
           </div>
           
-          <div className="p-5 overflow-y-auto flex-1 space-y-4">
-            <div className="bg-sky-50/50 p-3.5 border-l-4 border-[#0078d4] text-xs text-slate-700 rounded shadow-sm">
-              <strong className="block text-[#0078d4] mb-1 font-semibold">💡 Hướng dẫn Pivot:</strong>
-              Hệ thống sẽ gom nhóm các dòng dữ liệu trùng khớp dựa trên các cột bạn chọn ở mục <b>Gom Nhóm</b>, và tự động tính tổng (Sum) các cột số lượng/thành tiền được chọn ở mục <b>Tính Tổng</b>.
-            </div>
-
-            {/* Config options */}
-            <div className="grid grid-cols-2 gap-4">
-              {/* Group columns selection */}
-              <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/20">
-                <span className="block font-bold text-slate-800 mb-2 text-xs border-b pb-1">🗂️ Cột Hiển Thị / Gom Nhóm:</span>
-                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                  {pivotColumns.map(col => (
-                    <label key={col.index} className="flex items-center gap-2 cursor-pointer text-xs select-none hover:text-sky-700 transition-colors">
-                      <input 
-                        type="checkbox" 
-                        checked={selectedPivotGroupCols.includes(col.index)}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedPivotGroupCols([...selectedPivotGroupCols, col.index]);
-                          } else {
-                            setSelectedPivotGroupCols(selectedPivotGroupCols.filter(i => i !== col.index));
-                          }
-                        }}
-                        className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
-                      />
-                      <span>{col.name}</span>
-                    </label>
-                  ))}
-                </div>
+          <div className="p-4 overflow-y-auto flex-1 space-y-3.5 bg-white">
+            
+            {/* Top Field List Section */}
+            <div className="border border-[#d2d0ce] rounded bg-white overflow-hidden shadow-sm">
+              <div className="bg-[#f3f2f1] px-3 py-1.5 border-b border-[#e1dfdd] text-xs font-semibold text-[#323130]">
+                Choose fields to add to report:
               </div>
-
-              {/* Aggregation columns selection */}
-              <div className="border border-slate-200 rounded-lg p-3 bg-slate-50/20">
-                <span className="block font-bold text-slate-800 mb-2 text-xs border-b pb-1">📈 Cột Tính Tổng (Sum):</span>
-                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                  {pivotColumns.filter(col => col.index !== -100).map(col => (
-                    <label key={col.index} className="flex items-center gap-2 cursor-pointer text-xs select-none hover:text-sky-700 transition-colors">
+              <div className="p-2.5 space-y-1.5 max-h-48 overflow-y-auto">
+                {pivot5Fields.map((field) => {
+                  const isChecked = checkedPivotFields.includes(field.id);
+                  return (
+                    <label key={field.id} className="flex items-center gap-2.5 cursor-pointer text-xs select-none hover:bg-emerald-50/50 p-1 rounded transition-colors">
                       <input 
                         type="checkbox" 
-                        checked={selectedPivotAggCols.includes(col.index)}
+                        checked={isChecked}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            setSelectedPivotAggCols([...selectedPivotAggCols, col.index]);
+                            setCheckedPivotFields([...checkedPivotFields, field.id]);
+                            if (field.defaultCategory === 'rows' && !rowsPivotFields.includes(field.id)) {
+                              setRowsPivotFields([...rowsPivotFields, field.id]);
+                            } else if (field.defaultCategory === 'values' && !valuesPivotFields.includes(field.id)) {
+                              setValuesPivotFields([...valuesPivotFields, field.id]);
+                            }
                           } else {
-                            setSelectedPivotAggCols(selectedPivotAggCols.filter(i => i !== col.index));
+                            setCheckedPivotFields(checkedPivotFields.filter(id => id !== field.id));
+                            setRowsPivotFields(rowsPivotFields.filter(id => id !== field.id));
+                            setValuesPivotFields(valuesPivotFields.filter(id => id !== field.id));
                           }
                         }}
-                        className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                        className="w-4 h-4 accent-[#107c41] rounded border-gray-300 cursor-pointer"
                       />
-                      <span className={col.isNumeric ? "font-medium" : "text-slate-500"}>
-                        {col.name} {col.isNumeric ? "🔢" : ""}
-                      </span>
+                      <span className="font-medium text-slate-800">{field.name}</span>
                     </label>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Special Polytex settings */}
-            {pivotColumns.some(col => col.index === -100) && (
-              <div className="bg-amber-50/40 border border-amber-200 rounded-lg p-3 flex items-center justify-between">
-                <div className="text-xs">
-                  <span className="font-bold text-amber-800 block">⚙️ Cấu hình đặc biệt Polytex</span>
-                  <span className="text-slate-500 text-[11px]">Tự động tách mã số và mô tả hàng hóa để so khớp gom nhóm sạch hơn</span>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer select-none">
-                  <input 
-                    type="checkbox" 
-                    checked={splitPolytexCode}
-                    onChange={(e) => setSplitPolytexCode(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-amber-500"></div>
-                </label>
-              </div>
-            )}
+            {/* Sub-label Drag info */}
+            <div className="text-[11px] text-[#605e5c] font-medium border-b border-[#e1dfdd] pb-1">
+              Drag fields between areas below:
+            </div>
 
-            {/* Action buttons */}
-            <div className="text-center pt-2">
+            {/* Bottom Areas Grid (Rows and Values with Drag-and-Drop) */}
+            <div className="grid grid-cols-2 gap-3">
+              {/* Rows Area */}
+              <div 
+                onDragOver={(e) => { e.preventDefault(); setDragOverZone('rows'); }}
+                onDragLeave={() => setDragOverZone(null)}
+                onDrop={(e) => { e.preventDefault(); handleDropToZone('rows'); }}
+                className={`border rounded p-2 flex flex-col h-44 transition-colors ${dragOverZone === 'rows' ? 'border-[#0078d4] bg-blue-50/50' : 'border-[#c8c8c8] bg-[#faf9f8]'}`}
+              >
+                <div className="flex justify-between items-center border-b border-[#e1dfdd] pb-1 mb-1.5 shrink-0">
+                  <span className="text-xs font-bold text-[#323130] flex items-center gap-1">
+                    <span>≡</span> Rows (Hàng)
+                  </span>
+                  <span className="text-[10px] text-[#605e5c]">({rowsPivotFields.length})</span>
+                </div>
+                <div className="space-y-1.5 overflow-y-auto flex-1 pr-1">
+                  {rowsPivotFields.map((fId, index) => {
+                    const field = pivot5Fields.find(f => f.id === fId);
+                    return (
+                      <div 
+                        key={fId} 
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', fId);
+                          setDraggedField({ id: fId, source: 'rows' });
+                        }}
+                        onDragEnd={() => { setDraggedField(null); setDragOverZone(null); }}
+                        className="bg-white border border-[#d2d0ce] px-2 py-1.5 rounded text-xs text-[#323130] flex justify-between items-center shadow-2xs group cursor-grab active:cursor-grabbing hover:border-[#0078d4]"
+                      >
+                        <span className="truncate flex items-center gap-1.5 select-none">
+                          <span className="text-[#a19f9d] text-[10px] font-mono">⋮⋮</span>
+                          <span>{field?.name || fId}</span>
+                        </span>
+                        <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+                          {/* Nút Lên / Xuống */}
+                          <button 
+                            disabled={index === 0}
+                            title="Di chuyển lên" 
+                            onClick={() => moveRowField(index, 'up')}
+                            className="text-[#605e5c] hover:text-[#0078d4] disabled:opacity-30 text-[10px] px-0.5"
+                          >
+                            ▲
+                          </button>
+                          <button 
+                            disabled={index === rowsPivotFields.length - 1}
+                            title="Di chuyển xuống" 
+                            onClick={() => moveRowField(index, 'down')}
+                            className="text-[#605e5c] hover:text-[#0078d4] disabled:opacity-30 text-[10px] px-0.5"
+                          >
+                            ▼
+                          </button>
+                          {/* Nút Chuyển sang Values */}
+                          <button 
+                            title="Chuyển sang Values (Sum)" 
+                            onClick={() => {
+                              setRowsPivotFields(rowsPivotFields.filter(id => id !== fId));
+                              if (!valuesPivotFields.includes(fId)) setValuesPivotFields([...valuesPivotFields, fId]);
+                            }}
+                            className="text-[#0078d4] hover:text-[#005a9e] font-bold text-[10px] px-1"
+                          >
+                            ➔
+                          </button>
+                          <button 
+                            title="Xóa khỏi Rows" 
+                            onClick={() => {
+                              setRowsPivotFields(rowsPivotFields.filter(id => id !== fId));
+                              setCheckedPivotFields(checkedPivotFields.filter(id => id !== fId));
+                            }}
+                            className="text-red-500 hover:text-red-700 font-bold text-[10px] px-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Values Area */}
+              <div 
+                onDragOver={(e) => { e.preventDefault(); setDragOverZone('values'); }}
+                onDragLeave={() => setDragOverZone(null)}
+                onDrop={(e) => { e.preventDefault(); handleDropToZone('values'); }}
+                className={`border rounded p-2 flex flex-col h-44 transition-colors ${dragOverZone === 'values' ? 'border-[#0078d4] bg-blue-50/50' : 'border-[#c8c8c8] bg-[#faf9f8]'}`}
+              >
+                <div className="flex justify-between items-center border-b border-[#e1dfdd] pb-1 mb-1.5 shrink-0">
+                  <span className="text-xs font-bold text-[#323130] flex items-center gap-1">
+                    <span>Σ</span> Values (Giá trị Sum)
+                  </span>
+                  <span className="text-[10px] text-[#605e5c]">({valuesPivotFields.length})</span>
+                </div>
+                <div className="space-y-1.5 overflow-y-auto flex-1 pr-1">
+                  {valuesPivotFields.map((fId, index) => {
+                    const field = pivot5Fields.find(f => f.id === fId);
+                    return (
+                      <div 
+                        key={fId} 
+                        draggable={true}
+                        onDragStart={(e) => {
+                          e.dataTransfer.setData('text/plain', fId);
+                          setDraggedField({ id: fId, source: 'values' });
+                        }}
+                        onDragEnd={() => { setDraggedField(null); setDragOverZone(null); }}
+                        className="bg-white border border-[#d2d0ce] px-2 py-1.5 rounded text-xs text-[#323130] flex justify-between items-center shadow-2xs group cursor-grab active:cursor-grabbing hover:border-[#0078d4]"
+                      >
+                        <span className="truncate flex items-center gap-1.5 select-none">
+                          <span className="text-[#a19f9d] text-[10px] font-mono">⋮⋮</span>
+                          <span>Sum of {field?.name || fId}</span>
+                        </span>
+                        <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100">
+                          {/* Nút Lên / Xuống */}
+                          <button 
+                            disabled={index === 0}
+                            title="Di chuyển lên" 
+                            onClick={() => moveValueField(index, 'up')}
+                            className="text-[#605e5c] hover:text-[#0078d4] disabled:opacity-30 text-[10px] px-0.5"
+                          >
+                            ▲
+                          </button>
+                          <button 
+                            disabled={index === valuesPivotFields.length - 1}
+                            title="Di chuyển xuống" 
+                            onClick={() => moveValueField(index, 'down')}
+                            className="text-[#605e5c] hover:text-[#0078d4] disabled:opacity-30 text-[10px] px-0.5"
+                          >
+                            ▼
+                          </button>
+                          {/* Nút Chuyển sang Rows */}
+                          <button 
+                            title="Chuyển sang Rows" 
+                            onClick={() => {
+                              setValuesPivotFields(valuesPivotFields.filter(id => id !== fId));
+                              if (!rowsPivotFields.includes(fId)) setRowsPivotFields([...rowsPivotFields, fId]);
+                            }}
+                            className="text-[#0078d4] hover:text-[#005a9e] font-bold text-[10px] px-1"
+                          >
+                            ⬅
+                          </button>
+                          <button 
+                            title="Xóa khỏi Values" 
+                            onClick={() => {
+                              setValuesPivotFields(valuesPivotFields.filter(id => id !== fId));
+                              setCheckedPivotFields(checkedPivotFields.filter(id => id !== fId));
+                            }}
+                            className="text-red-500 hover:text-red-700 font-bold text-[10px] px-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Toggle skip junk rows */}
+            <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded p-2.5 flex items-center justify-between">
+              <div className="text-xs">
+                <span className="font-bold text-[#166534] block">🧹 Làm sạch bảng dữ liệu</span>
+                <span className="text-slate-500 text-[10px]">Bỏ qua dòng 1 2 3 4 5 & dòng rỗng số liệu</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer select-none">
+                <input 
+                  type="checkbox" 
+                  checked={skipHeaderJunkRows}
+                  onChange={(e) => setSkipHeaderJunkRows(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-[#166534]"></div>
+              </label>
+            </div>
+
+            {/* Action button */}
+            <div className="text-center pt-1">
               <button 
                 onClick={handleGeneratePivot}
-                className="bg-sky-700 hover:bg-sky-800 text-white font-bold py-2 px-6 rounded-md shadow transition-all active:scale-95 text-xs"
+                className="bg-[#107c41] hover:bg-[#0c5e31] text-white font-bold py-2 px-6 rounded shadow transition-all active:scale-95 text-xs w-full"
               >
                 📊 Phân Tích & Tạo Pivot
               </button>
@@ -1571,16 +1908,16 @@ export default function Home() {
 
             {/* Pivot Results Preview */}
             {pivotResult && (
-              <div className="border border-slate-200 rounded-lg overflow-hidden bg-white shadow-inner">
-                <div className="bg-slate-100 px-3 py-1.5 border-b text-xs font-bold text-slate-700 flex justify-between items-center">
-                  <span>📋 Xem trước kết quả ({pivotResult.rows.length} dòng):</span>
+              <div className="border border-[#c8c8c8] rounded overflow-hidden bg-white shadow-inner">
+                <div className="bg-[#f3f2f1] px-3 py-1 border-b border-[#e1dfdd] text-xs font-bold text-[#323130] flex justify-between items-center">
+                  <span>📋 Kết quả Pivot ({pivotResult.rows.length} dòng):</span>
                 </div>
-                <div className="max-h-56 overflow-auto">
+                <div className="max-h-48 overflow-auto">
                   <table className="w-full text-left border-collapse text-[11px] font-sans">
                     <thead>
-                      <tr className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                      <tr className="bg-[#f3f2f1] border-b border-[#d2d0ce] sticky top-0">
                         {pivotResult.headers.map((h, i) => (
-                          <th key={i} className="p-2 font-bold text-slate-700 border-r border-slate-200">{h}</th>
+                          <th key={i} className="p-1.5 font-bold text-[#323130] border-r border-[#e1dfdd]">{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -1588,7 +1925,7 @@ export default function Home() {
                       {pivotResult.rows.map((row, rowIndex) => (
                         <tr key={rowIndex} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                           {row.map((val: any, colIndex: number) => (
-                            <td key={colIndex} className="p-2 border-r border-slate-100 text-slate-600 max-w-[200px] truncate" title={val}>
+                            <td key={colIndex} className="p-1.5 border-r border-slate-100 text-slate-700 max-w-[200px] truncate" title={val}>
                               {val !== null && val !== undefined ? val.toString() : ""}
                             </td>
                           ))}
@@ -1602,28 +1939,20 @@ export default function Home() {
           </div>
 
           {/* Footer controls */}
-          <div className="bg-slate-50 p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+          <div className="bg-[#f3f2f1] p-3 border-t border-[#c8c8c8] flex justify-end gap-2 shrink-0">
             <button 
               onClick={() => setShowPivotModal(false)} 
-              className="bg-gray-300 hover:bg-gray-400 text-black px-4 py-2 rounded font-medium transition-colors text-xs"
+              className="bg-gray-300 hover:bg-gray-400 text-black px-3 py-1.5 rounded font-medium transition-colors text-xs"
             >
               Đóng
             </button>
             {pivotResult && (
-              <>
-                <button 
-                  onClick={handleExportPivotToNewSheet}
-                  className="bg-[#107c41] hover:bg-[#0c5e31] text-white px-4 py-2 rounded font-bold transition-all shadow active:scale-95 text-xs"
-                >
-                  📝 Xuất ra Sheet mới
-                </button>
-                <button 
-                  onClick={handleExportPivotToExcel}
-                  className="bg-[#d83b01] hover:bg-[#a82e00] text-white px-4 py-2 rounded font-bold transition-all shadow active:scale-95 text-xs"
-                >
-                  💾 Tải Excel Pivot
-                </button>
-              </>
+              <button 
+                onClick={handleExportPivotToNewSheet}
+                className="bg-[#107c41] hover:bg-[#0c5e31] text-white px-4 py-1.5 rounded font-bold transition-all shadow active:scale-95 text-xs flex items-center gap-1.5"
+              >
+                📤 Xuất
+              </button>
             )}
           </div>
         </div>
