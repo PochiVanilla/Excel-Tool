@@ -20,7 +20,7 @@ const MOUSE: [string, string][] = [
   ['Chuột phải thanh trạng thái', 'Chọn số liệu hiển thị (Sum, Average, Count, Min, Max...)'],
   ['Click số liệu ở thanh trạng thái', 'Sao chép số đó'],
   ['Double-click tab sheet', 'Đổi tên sheet'],
-  ['Kéo thả file .xlsx / .pdf vào cửa sổ', 'Mở file Excel hoặc đọc PDF invoice'],
+  ['Kéo thả file .xlsx / .pdf vào cửa sổ', 'Mở file Excel · PDF invoice vải thì trích Excel · PDF bộ chứng từ thì mở Tách PDF'],
   ['Pivot: click / double-click dòng kết quả', 'Soi / nhảy tới các dòng nguồn trên hoá đơn'],
 ];
 

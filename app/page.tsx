@@ -10,11 +10,15 @@ import TrimPane, { TemplateInfo, TrimStrategy } from './components/TrimPane';
 import PivotPane, { formatByPattern } from './components/PivotPane';
 import ShortcutsDialog from './components/ShortcutsDialog';
 import PdfPane from './components/PdfPane';
+import SplitBoard from './components/SplitBoard';
+import SplitPane from './components/SplitPane';
 import { ToastStack, useToasts } from './components/Toasts';
 
 import { exportWorkbookBuffer } from './lib/exportWorkbook';
 import { FabricInvoice, buildFabricWorkbook, groupLines, parseFabricInvoice } from './lib/pdfInvoice';
 import { readPdfText } from './lib/pdfReader';
+import { assignPages, isInvoiceOnly } from './lib/pdfSplit';
+import { useSplitPdf } from './lib/useSplitPdf';
 import {
   buildPivotSource,
   computePivot,
@@ -51,7 +55,7 @@ import { ContextAction, autoFitColumns, installSheetInteractions, InteractionHan
 import { LuckyValue, getCellNumber, getCellText, getCleanedRangeText, getRangeText, rangeName } from './lib/sheetText';
 import { AutoTrimOptions, TrimBlock, TrimPlan, planAutoTrim, planBlankRows, planRpacTrim, planTemplateTrim } from './lib/trimEngine';
 
-type Pane = 'trim' | 'pivot' | 'pdf' | null;
+type Pane = 'trim' | 'pivot' | 'pdf' | 'split' | null;
 type PdfState = { fileName: string; invoice: FabricInvoice | null; error: string | null; rawLines: string[] };
 type UndoEntry = { label: string; sheets: LuckyValue[]; activeOrder: number; title: string };
 
@@ -106,10 +110,14 @@ export default function Home() {
 
   // ---- Trích xuất PDF ----
   const [pdfState, setPdfState] = useState<PdfState | null>(null);
+  // ---- Tách bộ chứng từ PDF ----
+  const split = useSplitPdf(toast, setLoading);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const openPdfRef = useRef<(file: File) => void>(() => {});
+  const splitInputRef = useRef<HTMLInputElement>(null);
+  const routePdfRef = useRef<(file: File) => void>(() => {});
   // Nghiệp vụ + danh sách trường của bố cục Pivot hiện tại -> đổi nghiệp vụ / đổi bảng thì dùng bố cục mặc định mới
   const layoutKeyRef = useRef<string | null>(null);
   // Luckysheet gọi hook ngoài chu kỳ render của React -> luôn đọc state mới nhất qua ref
@@ -321,7 +329,7 @@ export default function Home() {
   const openFile = useCallback(
     (file: File, opts: { skipConfirm?: boolean; dirty?: boolean; onLoaded?: () => void } = {}) => {
       if (/\.pdf$/i.test(file.name)) {
-        openPdfRef.current(file);
+        routePdfRef.current(file);
         return;
       }
       if (!/\.xlsx$/i.test(file.name)) {
@@ -440,6 +448,38 @@ export default function Home() {
   });
 
   // ==========================================
+  // TÁCH BỘ CHỨNG TỪ PDF (Tờ khai, Danh sách hàng hoá, Sales Contract, Invoice, Packing List, VAT...)
+  // ==========================================
+  const { load: loadSplit } = split;
+  const openSplit = useCallback(
+    async (file: File) => {
+      const st = await loadSplit(file);
+      if (!st) return;
+      clearOverlay();
+      setPane('split');
+    },
+    [loadSplit],
+  );
+
+  // Kéo thả PDF: chỉ là Commercial Invoice (+ Packing List) -> trích Excel; bộ nhiều chứng từ / có trang scan -> Tách PDF
+  const routePdf = useCallback(
+    async (file: File) => {
+      const st = await loadSplit(file);
+      if (!st) return;
+      if (isInvoiceOnly(assignPages(st.pages).assigns) && !st.pages.some((p) => p.isScan)) {
+        openPdf(file);
+        return;
+      }
+      clearOverlay();
+      setPane('split');
+    },
+    [loadSplit, openPdf],
+  );
+  useLayoutEffect(() => {
+    routePdfRef.current = routePdf;
+  });
+
+  // ==========================================
   // XUẤT FILE (thấy gì tải nấy)
   // ==========================================
   const exportFile = useCallback(async () => {
@@ -457,8 +497,8 @@ export default function Home() {
       const sheets = ls().getAllSheets();
       const buffer = await exportWorkbookBuffer(sheets, { original });
       const base = (stateRef.current.fileName || 'Du_lieu').replace(/\.xlsx$/i, '');
-      // File trích từ PDF đã được đặt tên theo số invoice -> giữ nguyên tên
-      const outName = /^TRICH_INV/i.test(base) ? `${base}.xlsx` : `${base}_da_xu_ly.xlsx`;
+      // File trích từ PDF đã được đặt tên theo số invoice -> giữ nguyên tên; hoá đơn VAT đã cắt gộp / Pivot -> VAT.xlsx
+      const outName = /^TRICH_INV/i.test(base) ? `${base}.xlsx` : 'VAT.xlsx';
       saveAs(new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), outName);
       setDirty(false);
       toast('success', `Đã tải xuống ${outName} (${sheets.length} sheet)`);
@@ -873,6 +913,18 @@ export default function Home() {
           e.target.value = '';
         }}
       />
+      <input
+        ref={splitInputRef}
+        type="file"
+        id="split-upload-input"
+        accept=".pdf,application/pdf"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) openSplit(file);
+          e.target.value = '';
+        }}
+      />
 
       {/* 1. Thanh tiêu đề */}
       <header className="titlebar">
@@ -906,6 +958,16 @@ export default function Home() {
               <Icon name="upload" size={26} />
               <span>Mở file</span>
             </button>
+            <button className="ribbon-btn is-accent" onClick={exportFile} disabled={!hasFile} title="Tải xuống file đã xử lý (Ctrl+S)">
+              <Icon name="download" size={26} />
+              <span>Tải xuống</span>
+            </button>
+          </div>
+          <div className="ribbon-caption">Tệp</div>
+        </div>
+
+        <div className="ribbon-group">
+          <div className="ribbon-buttons">
             <button
               className={`ribbon-btn ${pane === 'pdf' ? 'is-on' : ''}`}
               onClick={() => pdfInputRef.current?.click()}
@@ -914,12 +976,22 @@ export default function Home() {
               <Icon name="file" size={26} />
               <span>Đọc PDF</span>
             </button>
-            <button className="ribbon-btn is-accent" onClick={exportFile} disabled={!hasFile} title="Tải xuống file đã xử lý (Ctrl+S)">
-              <Icon name="download" size={26} />
-              <span>Tải xuống</span>
+            <button
+              className={`ribbon-btn ${pane === 'split' ? 'is-on' : ''}`}
+              onClick={() => {
+                if (pane === 'split') closePane();
+                else if (split.state) {
+                  clearOverlay();
+                  setPane('split');
+                } else splitInputRef.current?.click();
+              }}
+              title="Tách bộ chứng từ PDF theo tiêu đề trang — xuất TKX, SC, ANNEX, INV, PKL, VAT, Other; trang scan gom vào SCAN.pdf"
+            >
+              <Icon name="layers" size={26} />
+              <span>Tách PDF</span>
             </button>
           </div>
-          <div className="ribbon-caption">Tệp</div>
+          <div className="ribbon-caption">PDF</div>
         </div>
 
         <div className="ribbon-group">
@@ -969,8 +1041,20 @@ export default function Home() {
 
       {/* 3. Vùng làm việc: bảng tính + task pane */}
       <main className="workspace">
-        <div className="sheet-area">
+        <div className={`sheet-area ${pane === 'split' && split.state ? 'is-split' : ''}`}>
           <div id="luckysheet-container" className="sheet-container" />
+          {pane === 'split' && split.state && (
+            <SplitBoard
+              fileName={split.state.fileName}
+              pages={split.state.pages}
+              assigns={split.assigns}
+              autoAssigns={split.autoAssigns}
+              outputs={split.outputs}
+              overrides={split.state.overrides}
+              pageImage={split.pageImage}
+              onOverride={split.setOverride}
+            />
+          )}
           {ready && !hasFile && (
             <div className="welcome">
               <div className="welcome-card">
@@ -979,7 +1063,7 @@ export default function Home() {
                     <Icon name="upload" size={26} />
                   </span>
                   <span className="dropzone-title">Kéo thả file hoá đơn Excel vào đây</span>
-                  <span className="dropzone-sub">hoặc bấm để chọn file .xlsx (Ctrl + O) · file PDF invoice vải sẽ được trích ra bảng Excel</span>
+                  <span className="dropzone-sub">hoặc bấm để chọn file .xlsx (Ctrl + O) · PDF invoice vải được trích ra Excel · PDF bộ chứng từ được tách theo loại</span>
                 </button>
                 <div className="feature-grid">
                   <div className="feature">
@@ -1051,6 +1135,16 @@ export default function Home() {
                 onClose={closePane}
                 undoLabel={lastUndo ? lastUndo.label : null}
                 onUndo={undo}
+              />
+            ) : pane === 'split' ? (
+              <SplitPane
+                split={split}
+                onPickFile={() => splitInputRef.current?.click()}
+                onExtractInvoice={async (o) => {
+                  const file = await split.outputFile(o);
+                  if (file) openPdf(file);
+                }}
+                onClose={closePane}
               />
             ) : pane === 'pdf' ? (
               <PdfPane

@@ -1645,3 +1645,301 @@ body.is-resizing * {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+
+/* ==========================================
+   TÁCH PDF: bảng ảnh trang + danh sách file xuất
+   ========================================== */
+.bg-amber {
+  background: linear-gradient(135deg, #f59e0b, #b45309);
+}
+
+.tone-sky {
+  color: #075985;
+  background: #f0f9ff;
+  border-color: #bae6fd;
+}
+
+.split-board {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  overflow: auto;
+  padding: 0 20px 28px;
+  background: var(--canvas);
+}
+
+.split-board-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -20px 12px;
+  padding: 12px 20px;
+  font-size: 13px;
+  color: var(--ink);
+  background: rgba(244, 245, 246, 0.94);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--line);
+}
+
+.split-group {
+  margin-bottom: 14px;
+  padding: 12px 14px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--split-color);
+  border-radius: 10px;
+}
+
+.split-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.split-group-sub {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.split-dot {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: var(--split-color);
+}
+
+.split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(136px, 1fr));
+  gap: 12px;
+}
+
+.split-thumb {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.split-thumb.is-skip {
+  opacity: 0.55;
+}
+
+.split-thumb-img {
+  position: relative;
+  width: 100%;
+  max-height: 190px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #d7dbe0;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  transition: box-shadow 0.15s, border-color 0.15s, transform 0.15s;
+}
+
+.split-thumb-img:hover {
+  border-color: var(--split-color);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.14);
+  transform: translateY(-1px);
+}
+
+.split-thumb-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.split-thumb-wait {
+  width: 60%;
+  height: 60%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #f1f5f9, #e2e8f0, #f1f5f9);
+  background-size: 200% 100%;
+  animation: split-shimmer 1.2s linear infinite;
+}
+
+@keyframes split-shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.split-badge {
+  position: absolute;
+  top: 5px;
+  left: 5px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  background: #0ea5e9;
+  border-radius: 999px;
+}
+
+.split-badge.is-scan {
+  background: #b45309;
+}
+
+.split-badge.is-title {
+  background: var(--split-color);
+}
+
+.split-thumb-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.split-thumb-no {
+  min-width: 22px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--muted);
+  text-align: center;
+}
+
+.split-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.split-select.is-manual {
+  color: #075985;
+  background: #f0f9ff;
+  border-color: #7dd3fc;
+  font-weight: 600;
+}
+
+.split-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.split-zoom-card {
+  width: min(960px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.35);
+}
+
+.split-zoom-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.split-zoom-head .chip {
+  color: #fff;
+  background: #475569;
+  border-color: transparent;
+}
+
+.split-zoom-body {
+  flex: 1;
+  min-height: 300px;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: #e5e7eb;
+}
+
+.split-zoom-body img {
+  max-width: 100%;
+  background: #fff;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.18);
+}
+
+.split-outputs {
+  display: flex;
+  flex-direction: column;
+}
+
+.split-output {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 8px 12px;
+  border-top: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--split-color);
+}
+
+.split-output-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.split-output-name {
+  overflow: hidden;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.split-output-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.split-output-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.split-progress {
+  margin-top: 8px;
+}
+
+.split-progress-bar {
+  height: 6px;
+  overflow: hidden;
+  background: #f1f5f9;
+  border-radius: 999px;
+}
+
+.split-progress-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #f59e0b, #b45309);
+  transition: width 0.3s;
+}
+
+.split-progress-text {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Đang xem Tách PDF: ẩn bảng tính phía sau (vạch cố định dòng của Luckysheet nằm trên mọi lớp) */
+.sheet-area.is-split .sheet-container {
+  visibility: hidden;
+}
