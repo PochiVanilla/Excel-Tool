@@ -3,8 +3,8 @@ import Script from "next/script";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Excel Tool",
-  description: "Công cụ xử lý Excel tốc độ cao",
+  title: "Excel Tool · Xử lý hoá đơn VAT",
+  description: "Cắt gộp header/footer lặp lại, Pivot (hoá đơn Polytex, chỉ may A&E hoặc bảng bất kỳ) và thao tác bảng tính như Excel",
 };
 
 export default function RootLayout({
