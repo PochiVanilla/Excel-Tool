@@ -174,7 +174,7 @@ export default function SplitPane({
           <Icon name="info" size={14} className="shrink-0 mt-0.5" />
           <span>
             Mỗi trang được nhận diện theo <b>tiêu đề</b> (Tờ khai, Danh sách hàng hoá, Sales Contract, Commercial Invoice, Packing List, VAT...). Trang không có tiêu đề thuộc chứng từ ở
-            trang trước. Nhận sai thì chọn lại loại ngay dưới ảnh trang.
+            trang trước. Nhận sai thì chọn lại loại ngay dưới ảnh trang — chỉ cần chọn <b>trang đầu</b> của mỗi chứng từ, các trang phía sau tự theo.
           </span>
         </div>
       </div>

@@ -3,6 +3,8 @@
 // (Tờ khai xuất khẩu, Danh sách hàng hoá, Sales Contract, Commercial Invoice, Packing List, VAT...)
 // - Mỗi trang: tìm dòng tiêu đề (chữ to / nằm phía trên trang) khớp với từ khoá của từng loại chứng từ
 // - Trang không có tiêu đề là trang tiếp theo của chứng từ phía trước
+// - Chọn tay loại cho 1 trang -> các trang phía sau theo loại đó cho tới trang chọn tay kế tiếp
+//   (hoặc tới trang có tiêu đề nhận ra được) -> chỉ cần chọn trang đầu của mỗi chứng từ
 // - Tiêu đề lạ (chưa có trong danh sách, vd "BIÊN BẢN GIAO HÀNG") -> tách thành chứng từ riêng, không gộp vào bộ trước
 // - Trang ảnh scan (không có lớp chữ) gom riêng vào scan.pdf, trừ khi OCR đọc được tiêu đề
 // Không phụ thuộc DOM -> test được bằng Node
@@ -19,6 +21,7 @@ export type DocTypeId =
   | 'annex'
   | 'commercial-invoice'
   | 'packing-list'
+  | 'cdgh'
   | 'vat'
   | 'bill-of-lading'
   | 'co'
@@ -142,6 +145,15 @@ export const DOC_TYPES: DocTypeDef[] = [
   { id: 'commercial-invoice', label: 'Commercial Invoice', code: 'INV', color: '#059669', phrases: ['commercial invoice', 'hoa don thuong mai'], docNo: invoiceNo },
   { id: 'packing-list', label: 'Packing List', code: 'PKL', color: '#ca8a04', phrases: ['packing and weight list', 'packing list', 'phieu dong goi'], docNo: invoiceNo },
   {
+    id: 'cdgh',
+    label: 'Chỉ định giao nhận hàng',
+    code: 'CDGH',
+    color: '#0369a1',
+    phrases: ['chi dinh giao nhan hang', 'chi dinh giao hang', 'chi dinh nhan hang'],
+    // Số dạng "29/2026/BSNIN-FEN"
+    docNo: (text) => firstMatch(text, /\b(\d{1,4}\/\d{4}\/[A-Z0-9][A-Z0-9-]*)/),
+  },
+  {
     id: 'vat',
     label: 'Hóa đơn VAT',
     code: 'VAT',
@@ -258,7 +270,9 @@ export interface PageAssign {
   segment: number;
   title: string;
   docNo: string;
-  how: 'title' | 'continue' | 'ocr' | 'manual' | 'scan' | 'skip';
+  how: 'title' | 'continue' | 'ocr' | 'manual' | 'follow' | 'scan' | 'skip';
+  // how = 'follow': trang chọn tay phía trước mà trang này đang theo
+  from?: number;
 }
 
 export interface Segment {
@@ -276,6 +290,8 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
   const segments: Segment[] = [];
   let cur: Segment | null = null;
   let prevScanSegment: Segment | null = null;
+  // Lựa chọn tay đang "lan" xuống các trang phía sau
+  let run: { target: PageTarget; from: number } | null = null;
 
   const start = (type: DocTypeId, docNo: string, title = '') => {
     const label = type === 'other' && title ? sentenceCase(title) : docTypeOf(type).label;
@@ -285,14 +301,29 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
   };
 
   for (const page of pages) {
-    const override = overrides[page.index];
+    let override = overrides[page.index];
     const readable = !page.isScan;
     // ocrToScan: trang scan luôn vào scan.pdf (kể cả khi OCR đã đọc được tiêu đề), trừ khi chọn tay
     const lines = readable ? page.lines : opts.ocrToScan ? [] : page.ocr || [];
     const det = lines.length ? detectTitle(lines, !readable) : { type: null, title: '', docNo: '' };
 
+    let followed = false;
+    if (override) {
+      // "Bỏ trang" chỉ áp dụng cho đúng trang đó, không cắt đứt loại đang lan
+      if (override !== 'skip') run = { target: override, from: page.index };
+    } else if (run) {
+      // Gặp trang có tiêu đề nhận ra được -> dừng lan, trang đó theo nhận diện tự động
+      if (det.type || (readable && prominentTitle(lines))) run = null;
+      else {
+        override = run.target;
+        followed = true;
+      }
+    }
+    const from = followed && run ? run.from : undefined;
+
     if (override === 'skip' || override === 'scan') {
-      assigns.push({ index: page.index, target: override, segment: -1, title: det.title, docNo: det.docNo, how: override === 'skip' ? 'skip' : 'manual' });
+      const how = override === 'skip' ? 'skip' : followed ? 'follow' : 'manual';
+      assigns.push({ index: page.index, target: override, segment: -1, title: det.title, docNo: det.docNo, how, from });
       if (override === 'scan') prevScanSegment = null;
       continue;
     }
@@ -317,7 +348,7 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
       continue;
     }
 
-    let how: PageAssign['how'] = override ? 'manual' : readable ? 'title' : 'ocr';
+    let how: PageAssign['how'] = followed ? 'follow' : override ? 'manual' : readable ? 'title' : 'ocr';
     const c = cur as Segment | null;
     let seg: Segment;
     const strange = !type && readable ? prominentTitle(lines) : '';
@@ -333,14 +364,15 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
       type = seg.type;
       docNo = seg.docNo;
       how = 'continue';
-    } else if (!c || c.type !== type || (docNo && c.docNo && docNo !== c.docNo)) {
+    } else if (!c || c.type !== type || (docNo && c.docNo && docNo !== c.docNo) || (override && !followed)) {
+      // Trang chọn tay luôn là trang đầu của 1 chứng từ mới
       seg = start(type, docNo);
     } else {
       seg = c;
       if (!seg.docNo && docNo) seg.docNo = docNo;
     }
     seg.pages.push(page.index);
-    assigns.push({ index: page.index, target: type, segment: seg.id, title: det.title || strange, docNo: docNo || seg.docNo, how });
+    assigns.push({ index: page.index, target: type, segment: seg.id, title: det.title || strange, docNo: docNo || seg.docNo, how, from });
     prevScanSegment = readable ? null : seg;
   }
   return { assigns, segments };

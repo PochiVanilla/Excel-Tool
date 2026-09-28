@@ -11,7 +11,8 @@ const HOW_LABELS: Record<PageAssign['how'], string> = {
   title: 'Nhận diện theo tiêu đề',
   continue: 'Trang tiếp theo (không có tiêu đề)',
   ocr: 'Trang scan — OCR đọc được',
-  manual: 'Đã chọn tay',
+  manual: 'Đã chọn tay (các trang phía sau theo loại này)',
+  follow: 'Theo trang chọn tay phía trước',
   scan: 'Trang scan (ảnh, không có lớp chữ)',
   skip: 'Bỏ ra, không xuất',
 };
@@ -61,7 +62,7 @@ function PageThumb({
   }, [page.index, pageImage]);
 
   const badge =
-    assign.how === 'scan' ? 'Scan' : assign.how === 'ocr' ? 'Scan · OCR' : assign.how === 'manual' ? 'Chọn tay' : assign.how === 'skip' ? 'Bỏ' : null;
+    assign.how === 'scan' ? 'Scan' : assign.how === 'ocr' ? 'Scan · OCR' : assign.how === 'manual' ? 'Chọn tay' : assign.how === 'follow' ? `Theo tr. ${(assign.from ?? 0) + 1}` : assign.how === 'skip' ? 'Bỏ' : null;
 
   return (
     <div className={`split-thumb ${assign.target === 'skip' ? 'is-skip' : ''}`} ref={ref}>
@@ -84,7 +85,9 @@ function PageThumb({
           onChange={(e) => onOverride(e.target.value ? (e.target.value as PageTarget) : null)}
           title="Đổi loại chứng từ của trang này"
         >
-          <option value="">{targetLabel(autoTarget)} (tự động)</option>
+          <option value="">
+            {assign.how === 'follow' ? `${targetLabel(assign.target)} (theo trang ${(assign.from ?? 0) + 1})` : `${targetLabel(autoTarget)} (tự động)`}
+          </option>
           {DOC_TYPES.map((d) => (
             <option key={d.id} value={d.id}>
               {d.code} · {d.label}
@@ -175,7 +178,7 @@ export default function SplitBoard({
         <span>
           · {pages.length} trang → {outputs.length} file PDF
         </span>
-        <span className="ml-auto text-slate-500">Sai loại? Chọn lại ngay dưới ảnh trang</span>
+        <span className="ml-auto text-slate-500">Sai loại? Chọn lại ở trang đầu của chứng từ, các trang sau tự theo</span>
       </div>
       {outputs.map((o) => group(o.key, o.fileName, `${o.kinds.join(', ')} · ${o.pages.length} trang · trang ${pageRanges(o.pages)}`, o.color, o.pages))}
       {skipped.length > 0 && group('skip', 'Trang bỏ ra (không xuất)', `${skipped.length} trang`, '#94a3b8', skipped)}
