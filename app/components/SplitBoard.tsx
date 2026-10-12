@@ -3,9 +3,9 @@
 // Bảng xem trước "Tách PDF": ảnh từng trang xếp theo file PDF sẽ xuất ra
 // - Dưới mỗi trang có ô chọn loại chứng từ để sửa tay khi nhận diện sai (hoặc đưa vào SCAN.pdf / bỏ trang)
 // - Nhấp vào ảnh để xem to
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
-import { DOC_TYPES, PageAssign, PageTarget, SCAN_COLOR, SplitOutput, SplitPage, docTypeOf, pageRanges } from '../lib/pdfSplit';
+import { DOC_TYPES, OTHER_CODE, PageAssign, PageTarget, SCAN_COLOR, SplitOutput, SplitPage, docTypeOf, pageRanges } from '../lib/pdfSplit';
 
 const HOW_LABELS: Record<PageAssign['how'], string> = {
   title: 'Nhận diện theo tiêu đề',
@@ -16,6 +16,9 @@ const HOW_LABELS: Record<PageAssign['how'], string> = {
   scan: 'Trang scan (ảnh, không có lớp chữ)',
   skip: 'Bỏ ra, không xuất',
 };
+
+// Mỗi mã file 1 lựa chọn: các loại cùng xuất ra Other.pdf chỉ còn 1 mục "Other"
+const PICK_OPTIONS = DOC_TYPES.filter((d) => d.code !== OTHER_CODE || d.id === 'other');
 
 const targetLabel = (t: PageTarget) => (t === 'scan' ? 'SCAN' : t === 'skip' ? 'Bỏ trang' : `${docTypeOf(t).code} · ${docTypeOf(t).label}`);
 
@@ -88,7 +91,7 @@ function PageThumb({
           <option value="">
             {assign.how === 'follow' ? `${targetLabel(assign.target)} (theo trang ${(assign.from ?? 0) + 1})` : `${targetLabel(autoTarget)} (tự động)`}
           </option>
-          {DOC_TYPES.map((d) => (
+          {PICK_OPTIONS.map((d) => (
             <option key={d.id} value={d.id}>
               {d.code} · {d.label}
             </option>
@@ -101,7 +104,7 @@ function PageThumb({
   );
 }
 
-export default function SplitBoard({
+function SplitBoard({
   fileName,
   pages,
   assigns,
@@ -216,3 +219,6 @@ export default function SplitBoard({
     </div>
   );
 }
+
+// Không vẽ lại cả lưới ảnh trang mỗi lần thanh tiến độ OCR / khung bên phải cập nhật
+export default memo(SplitBoard);

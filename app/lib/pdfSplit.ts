@@ -34,6 +34,8 @@ export interface SplitLine {
   // Cỡ chữ (pt) và vị trí mép trên của dòng tính từ đầu trang (0 = trên cùng, 1 = dưới cùng)
   size: number;
   top: number;
+  // Mép trái (tỉ lệ chiều rộng trang) — có ở kết quả OCR, dùng để ghép các mảnh chữ cùng hàng
+  left?: number;
 }
 
 export interface SplitPage {
@@ -142,7 +144,7 @@ export const DOC_TYPES: DocTypeDef[] = [
     strict: ['phu luc', 'annex', 'appendix'],
     docNo: contractNo,
   },
-  { id: 'commercial-invoice', label: 'Commercial Invoice', code: 'INV', color: '#059669', phrases: ['commercial invoice', 'hoa don thuong mai'], docNo: invoiceNo },
+  { id: 'commercial-invoice', label: 'Commercial Invoice', code: 'INV', color: '#059669', phrases: ['commercial invoice', 'hoa don thuong mai'], strict: ['invoice'], docNo: invoiceNo },
   { id: 'packing-list', label: 'Packing List', code: 'PKL', color: '#ca8a04', phrases: ['packing and weight list', 'packing list', 'phieu dong goi'], docNo: invoiceNo },
   {
     id: 'cdgh',
@@ -170,8 +172,49 @@ export const docTypeOf = (id: DocTypeId) => DOC_TYPES.find((d) => d.id === id)!;
 export const SCAN_COLOR = '#b45309';
 
 // ---------- So khớp cụm từ (OCR thì cho phép sai vài ký tự) ----------
+// Font tiếng Việt cũ (bảng mã VNI) hiện thành "HÔÏP ÑOÀNG THÖÔNG MAÏI" = "HỢP ĐỒNG THƯƠNG MẠI":
+// Ñ = Đ, Ö = Ư, Ô = Ơ, còn dấu thanh / dấu mũ là ký tự đứng sau nguyên âm (Ï Ø Ù Û Õ Â À Á...) -> bỏ để so khớp
+// (chữ Việt Unicode không bao giờ có Ñ Ï Ø Û Ö -> dùng làm dấu hiệu nhận ra VNI)
+const VNI_SIGN_RE = /[ÑñÏïØøÛûÖöÅåÄäËë]/;
+const VNI_MARK_RE = /([AEIOUYaeiouy])[ÂâÁáÀàÅåÃãÄäÊêÉéÈèËëÙùØøÛûÕõÏïÔô]+/g;
+const decodeVni = (s: string) =>
+  VNI_SIGN_RE.test(s)
+    ? s
+        .replace(/[Ññ]/g, 'd')
+        .replace(/[Öö]/g, 'u')
+        .replace(/[Ôô](?=[ÙùØøÛûÕõÏï]|[^AEIOUYaeiouy]|$)/g, 'o')
+        .replace(VNI_MARK_RE, '$1')
+    : s;
+
+// Chữ viết giãn "P A C K I N G  L I S T", "I N V O I C E", "H Ó A  Đ Ơ N" -> ghép các chữ cái đứng lẻ liên tiếp (>= 3) thành từ.
+// Khoảng trắng đôi trở lên được giữ làm ranh giới giữa các từ; dòng giãn 1 khoảng trắng thì ghép liền ("packinglist"),
+// khi so khớp sẽ so cả dạng bỏ khoảng trắng nên vẫn nhận ra được
+const joinSpacedLetters = (raw: string) =>
+  raw
+    .split(/\s{2,}/)
+    .map((chunk) => {
+      const out: string[] = [];
+      let run: string[] = [];
+      // Dãy >= 3 cụm 1-2 ký tự liền nhau, có ít nhất 1 chữ đứng lẻ (OCR hay đọc "I N V O I C E" thành "I NV OI CE")
+      const flush = () => {
+        if (run.length >= 3 && run.some((t) => t.length === 1)) out.push(run.join(''));
+        else out.push(...run);
+        run = [];
+      };
+      for (const t of chunk.trim().split(/\s+/)) {
+        if (/^[\p{L}\d]{1,2}$/u.test(t)) run.push(t);
+        else {
+          flush();
+          out.push(t);
+        }
+      }
+      flush();
+      return out.join(' ');
+    })
+    .join(' ');
+
 const norm = (s: string) =>
-  foldText(s)
+  foldText(joinSpacedLetters(decodeVni(s)))
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 
@@ -195,13 +238,35 @@ const approxSubstringDistance = (text: string, pat: string) => {
 
 const matchPhrase = (lineNorm: string, phrase: string, fuzzy: boolean) => {
   if (` ${lineNorm} `.includes(` ${phrase} `)) return true;
+  // Dòng ngắn viết dính / giãn chữ ("PACKINGLIST", "P A C K I N G L I S T") -> so khớp bỏ khoảng trắng
+  const compact = lineNorm.replace(/ /g, '');
+  const target = phrase.replace(/ /g, '');
+  if (compact.length <= target.length * 1.5 && compact.includes(target)) return true;
   if (!fuzzy) return false;
-  // OCR hay dính / tách chữ và sai dấu -> so khớp bỏ khoảng trắng, cho sai ~12% ký tự
-  const t = lineNorm.replace(/ /g, '');
-  const p = phrase.replace(/ /g, '');
+  // OCR hay dính / tách chữ, sai dấu, nhầm chữ với số (I -> 1 / l, O -> 0) -> so khớp bỏ khoảng trắng, cho sai ~12% ký tự
+  const ocrFix = (x: string) => x.replace(/ /g, '').replace(/[1l]/g, 'i').replace(/0/g, 'o');
+  const t = ocrFix(lineNorm);
+  const p = ocrFix(phrase);
   if (t.includes(p)) return true;
   if (t.length < p.length * 0.6) return false;
-  return approxSubstringDistance(t, p) <= Math.floor(p.length * 0.12);
+  return approxSubstringDistance(t, p) <= Math.max(p.length >= 6 ? 1 : 0, Math.floor(p.length * 0.12));
+};
+
+// OCR hay cắt 1 dòng tiêu đề thành nhiều mảnh cùng hàng ("I NV" + "O11 CE") -> thêm dòng ghép các mảnh cùng hàng
+const withRowMerges = (lines: SplitLine[]): SplitLine[] => {
+  const rows: SplitLine[][] = [];
+  for (const l of [...lines].sort((a, b) => a.top - b.top)) {
+    const row = rows.find((r) => Math.abs(r[0].top - l.top) < 0.008 && Math.max(r[0].size, l.size) < 2.5 * Math.min(r[0].size, l.size));
+    if (row) row.push(l);
+    else rows.push([l]);
+  }
+  const merged = rows
+    .filter((r) => r.length > 1)
+    .map((r) => {
+      const sorted = [...r].sort((a, b) => (a.left ?? 0) - (b.left ?? 0));
+      return { text: sorted.map((x) => x.text).join(' '), size: Math.max(...r.map((x) => x.size)), top: Math.min(...r.map((x) => x.top)) };
+    });
+  return [...lines, ...merged];
 };
 
 export interface PageDetect {
@@ -216,7 +281,7 @@ export const detectTitle = (lines: SplitLine[], fuzzy = false): PageDetect => {
   const sizes = lines.map((l) => l.size).sort((a, b) => a - b);
   const median = sizes[Math.floor(sizes.length / 2)] || 1;
   let best: { score: number; type: DocTypeId; title: string } | null = null;
-  for (const line of lines) {
+  for (const line of fuzzy ? withRowMerges(lines) : lines) {
     const big = line.size >= median * 1.25;
     if (line.top > 0.45 && !big) continue;
     const n = norm(line.text);
@@ -225,7 +290,8 @@ export const detectTitle = (lines: SplitLine[], fuzzy = false): PageDetect => {
       const candidates = [...def.phrases.map((p) => ({ p, min: 0.25 })), ...(def.strict || []).map((p) => ({ p, min: 0.7 }))];
       for (const { p: phrase, min } of candidates) {
         // Dòng tiêu đề thường ngắn: bỏ qua câu dài chỉ nhắc tới tên chứng từ (vd "...2 invoice, 2 packing list...")
-        if (phrase.length / n.length < min) continue;
+        // (so độ dài không tính khoảng trắng: "I NV OI CE" vẫn là dòng chỉ có chữ INVOICE)
+        if (phrase.replace(/ /g, '').length / Math.max(1, n.replace(/ /g, '').length) < min) continue;
         if (!matchPhrase(n, phrase, fuzzy)) continue;
         const score = line.size / median + (1 - line.top) * 1.5 + Math.min(1, phrase.length / n.length);
         if (!best || score > best.score) best = { score, type: def.id, title: line.text.trim() };
@@ -291,7 +357,7 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
   let cur: Segment | null = null;
   let prevScanSegment: Segment | null = null;
   // Lựa chọn tay đang "lan" xuống các trang phía sau
-  let run: { target: PageTarget; from: number } | null = null;
+  let run: { target: PageTarget; from: number; key: string } | null = null;
 
   const start = (type: DocTypeId, docNo: string, title = '') => {
     const label = type === 'other' && title ? sentenceCase(title) : docTypeOf(type).label;
@@ -307,13 +373,17 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
     const lines = readable ? page.lines : opts.ocrToScan ? [] : page.ocr || [];
     const det = lines.length ? detectTitle(lines, !readable) : { type: null, title: '', docNo: '' };
 
+    // Khoá tiêu đề của trang (tiêu đề nhận ra được hoặc tiêu đề lạ) để so trang cùng / khác chứng từ
+    const titleKey = readable ? norm(det.title || prominentTitle(lines)) : '';
     let followed = false;
     if (override) {
       // "Bỏ trang" chỉ áp dụng cho đúng trang đó, không cắt đứt loại đang lan
-      if (override !== 'skip') run = { target: override, from: page.index };
+      if (override !== 'skip') run = { target: override, from: page.index, key: titleKey };
     } else if (run) {
-      // Gặp trang có tiêu đề nhận ra được -> dừng lan, trang đó theo nhận diện tự động
-      if (det.type || (readable && prominentTitle(lines))) run = null;
+      // Chỉ dừng lan khi gặp trang CÓ CHỮ mang tiêu đề KHÁC (chứng từ mới); trang cùng tiêu đề với trang bắt đầu
+      // (tiêu đề in lại mỗi trang) hoặc không có tiêu đề thì tiếp tục theo. Trang scan luôn theo lựa chọn tay
+      // (tiêu đề OCR đọc được trên trang scan không đáng tin bằng lựa chọn của người dùng)
+      if (readable && titleKey && titleKey !== run.key && det.type !== run.target) run = null;
       else {
         override = run.target;
         followed = true;
@@ -329,8 +399,8 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
     }
 
     let type: DocTypeId | null = override ?? det.type;
-    let docNo = det.docNo;
-    if (override && override !== det.type) {
+    let docNo = followed ? '' : det.docNo;
+    if (override && !followed && override !== det.type) {
       const def = docTypeOf(override);
       docNo = def.docNo ? def.docNo(lines.map((l) => l.text).join('\n'), lines) : '';
     }
@@ -364,8 +434,8 @@ export const assignPages = (pages: SplitPage[], overrides: Record<number, PageTa
       type = seg.type;
       docNo = seg.docNo;
       how = 'continue';
-    } else if (!c || c.type !== type || (docNo && c.docNo && docNo !== c.docNo) || (override && !followed)) {
-      // Trang chọn tay luôn là trang đầu của 1 chứng từ mới
+    } else if (!c || c.type !== type || (!override && docNo && c.docNo && docNo !== c.docNo)) {
+      // Trang chọn tay cùng loại với chứng từ ngay trước -> gộp chung, không tách thêm file
       seg = start(type, docNo);
     } else {
       seg = c;
@@ -429,10 +499,11 @@ export const buildOutputs = (assigns: PageAssign[], segments: Segment[], mode: G
     }
   } else {
     for (const seg of nonEmpty) {
-      const out = make(`seg-${seg.id}`, seg);
-      if (out.code === OTHER_CODE) out.label = seg.label;
+      // Chứng từ "Other" luôn gom chung 1 file Other.pdf (kể cả khi tách từng bộ)
+      const isOther = docTypeOf(seg.type).code === OTHER_CODE;
+      let out = isOther ? outputs.find((o) => o.code === OTHER_CODE) : undefined;
+      if (!out) outputs.push((out = make(isOther ? OTHER_CODE : `seg-${seg.id}`, seg)));
       add(out, seg);
-      outputs.push(out);
     }
   }
   outputs.forEach((o) => o.pages.sort((a, b) => a - b));

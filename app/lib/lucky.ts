@@ -96,7 +96,7 @@ export const overlayHooks = {
     let color = '';
     if (overlay.deleteRows.has(r)) color = 'rgba(220, 38, 38, 0.16)';
     else if (overlay.focusRows.has(r)) color = 'rgba(250, 204, 21, 0.28)';
-    else if (overlay.keepRows.has(r)) color = 'rgba(16, 124, 65, 0.08)';
+    else if (overlay.keepRows.has(r)) color = 'rgba(76, 110, 129, 0.1)';
     if (!color) return;
     ctx.save();
     ctx.fillStyle = color;
@@ -108,7 +108,7 @@ export const overlayHooks = {
     let color = '';
     if (overlay.deleteRows.has(r)) color = 'rgba(220, 38, 38, 0.55)';
     else if (overlay.focusRows.has(r)) color = 'rgba(234, 179, 8, 0.6)';
-    else if (overlay.keepRows.has(r)) color = 'rgba(16, 124, 65, 0.35)';
+    else if (overlay.keepRows.has(r)) color = 'rgba(76, 110, 129, 0.4)';
     if (!color) return;
     ctx.save();
     ctx.fillStyle = color;

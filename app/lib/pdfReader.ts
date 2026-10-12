@@ -138,8 +138,17 @@ export const readSplitPage = async (doc: PdfDoc, index: number): Promise<SplitPa
   };
 };
 
+// Vẽ lần lượt từng trang (ảnh thu nhỏ và OCR không vẽ cùng lúc -> tránh bộ nhớ tăng vọt với file scan nhiều trang)
+let renderQueue: Promise<unknown> = Promise.resolve();
+
 // Vẽ 1 trang ra canvas (ảnh thu nhỏ / OCR). cropTop: chỉ lấy phần trên của trang (tỉ lệ chiều cao)
-export const renderPdfPage = async (doc: PdfDoc, index: number, targetWidth: number, cropTop = 1): Promise<HTMLCanvasElement> => {
+export const renderPdfPage = (doc: PdfDoc, index: number, targetWidth: number, cropTop = 1): Promise<HTMLCanvasElement> => {
+  const job = renderQueue.then(() => drawPage(doc, index, targetWidth, cropTop));
+  renderQueue = job.catch(() => {});
+  return job;
+};
+
+const drawPage = async (doc: PdfDoc, index: number, targetWidth: number, cropTop: number): Promise<HTMLCanvasElement> => {
   const page = await doc.getPage(index + 1);
   const base = page.getViewport({ scale: 1 });
   const viewport = page.getViewport({ scale: targetWidth / base.width });

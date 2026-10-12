@@ -7,10 +7,10 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { saveAs } from 'file-saver';
 import type { PDFDocument } from 'pdf-lib';
 import type { ToastTone } from '../components/Toasts';
-import { GroupMode, PageTarget, SplitOutput, SplitPage, assignPages, buildOutputs, detectTitle } from './pdfSplit';
+import { GroupMode, PageTarget, SplitLine, SplitOutput, SplitPage, assignPages, buildOutputs, detectTitle } from './pdfSplit';
 import { PdfDoc, openPdfDocument, readSplitPage, renderPdfPage } from './pdfReader';
 import { buildZip, extractPages, loadPdfSource, toBlob } from './pdfWriter';
-import { ocrCanvas } from './ocr';
+import { ocrCanvas, ocrConcurrency } from './ocr';
 
 export interface SplitState {
   fileName: string;
@@ -28,8 +28,8 @@ export interface OcrProgress {
 }
 
 const baseName = (name: string) => name.replace(/\.pdf$/i, '');
-// Vùng tiêu đề được OCR: 1/3 trên của trang
-const OCR_ZONE = 0.34;
+// Vùng tiêu đề được OCR: 30% trên của trang
+const OCR_ZONE = 0.3;
 
 export const useSplitPdf = (notify: (tone: ToastTone, msg: string) => void, setLoading: (msg: string) => void) => {
   const [state, setState] = useState<SplitState | null>(null);
@@ -134,33 +134,69 @@ export const useSplitPdf = (notify: (tone: ToastTone, msg: string) => void, setL
     const todo = state.pages.filter((p) => p.isScan && p.ocr === undefined).map((p) => p.index);
     if (todo.length === 0) return;
     let recognized = 0;
+    let done = 0;
+    const failed: number[] = [];
     setOcr({ done: 0, total: todo.length, status: 'Đang chuẩn bị OCR', recognized });
-    try {
-      for (let k = 0; k < todo.length; k++) {
-        const index = todo[k];
-        const page = state.pages[index];
-        // Chỉ đọc 1/3 trên của trang (vùng tiêu đề) ở ~300 dpi: nhanh và bắt tiêu đề chính xác hơn đọc cả trang
-        const width = Math.round(Math.min(3000, (page.width / 72) * 300));
-        const canvas = await renderPdfPage(doc, index, width, OCR_ZONE);
-        if (token !== tokenRef.current) return;
-        const fullHeight = (canvas.width / page.width) * page.height;
-        const lines = await ocrCanvas(
+    // Đọc 1 trang: 30% trên (vùng tiêu đề) ở ~300 dpi; lần thử lại dùng ~200 dpi cho nhẹ
+    const readPage = async (index: number, dpi: number) => {
+      const page = state.pages[index];
+      const width = Math.round(Math.min(3000, (page.width / 72) * dpi));
+      const canvas = await renderPdfPage(doc, index, width, OCR_ZONE);
+      const fullHeight = (canvas.width / page.width) * page.height;
+      try {
+        return await ocrCanvas(
           canvas,
-          (status, p) => {
-            if (token === tokenRef.current) setOcr({ done: k, total: todo.length, status: `${status}${p ? ` ${Math.round(p * 100)}%` : ''}`, recognized });
+          (status) => {
+            if (token === tokenRef.current) setOcr({ done, total: todo.length, status, recognized });
           },
           fullHeight,
         );
-        if (token !== tokenRef.current) return;
-        if (detectTitle(lines, true).type) recognized++;
-        setState((s) => (s ? { ...s, pages: s.pages.map((p) => (p.index === index ? { ...p, ocr: lines.length ? lines : null } : p)) } : s));
-        setOcr({ done: k + 1, total: todo.length, status: `Đã đọc trang ${index + 1}`, recognized });
+      } finally {
+        // Giải phóng bộ nhớ ảnh ngay (canvas ~2500 x 1000 px)
+        canvas.width = 0;
+        canvas.height = 0;
       }
+    };
+    // Nhiều trang đọc song song (mỗi worker OCR 1 trang), mỗi "luồng" lấy trang kế tiếp chưa đọc
+    let next = 0;
+    const runner = async () => {
+      while (next < todo.length && token === tokenRef.current) {
+        const index = todo[next++];
+        let lines: SplitLine[] | null = null;
+        try {
+          lines = await readPage(index, 300);
+        } catch {
+          // Lỗi 1 trang (quá thời gian, hết bộ nhớ...) -> worker đã được làm mới, thử lại 1 lần ở độ phân giải thấp hơn
+          try {
+            lines = await readPage(index, 200);
+          } catch {
+            lines = null;
+          }
+        }
+        if (token !== tokenRef.current) return;
+        if (lines === null) {
+          // Trang lỗi giữ nguyên "chưa OCR" -> bấm OCR lần nữa để đọc lại đúng các trang này
+          failed.push(index);
+        } else {
+          const result = lines;
+          if (detectTitle(result, true).type) recognized++;
+          setState((st) => (st ? { ...st, pages: st.pages.map((pg) => (pg.index === index ? { ...pg, ocr: result.length ? result : null } : pg)) } : st));
+        }
+        done++;
+        setOcr({ done, total: todo.length, status: `Đã đọc trang ${index + 1}`, recognized });
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: Math.min(ocrConcurrency(), todo.length) }, runner));
+      if (token !== tokenRef.current) return;
+      failed.sort((x, y) => x - y);
+      const ok = todo.length - failed.length;
+      const failNote = failed.length ? ` ${failed.length} trang lỗi (trang ${failed.map((i) => i + 1).join(', ')}) — bấm OCR lần nữa để đọc lại.` : '';
       notify(
-        recognized ? 'success' : 'info',
+        failed.length ? 'warn' : recognized ? 'success' : 'info',
         recognized
-          ? `OCR xong ${todo.length} trang scan: nhận ra tiêu đề ${recognized} trang, đã đưa về đúng loại chứng từ.`
-          : `OCR xong ${todo.length} trang scan nhưng không nhận ra tiêu đề nào — các trang này vẫn nằm trong SCAN.pdf.`,
+          ? `OCR xong ${ok}/${todo.length} trang scan: nhận ra tiêu đề ${recognized} trang, đã đưa về đúng loại chứng từ.${failNote}`
+          : `OCR xong ${ok}/${todo.length} trang scan nhưng không nhận ra tiêu đề nào — các trang này vẫn nằm trong SCAN.pdf.${failNote}`,
       );
     } catch (err) {
       notify('error', `Lỗi OCR: ${(err as Error)?.message || err}`);
