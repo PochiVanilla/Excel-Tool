@@ -359,7 +359,9 @@ export const buildWorkbook = (sheets: AnyObj[], opts: ExportOptions = {}) => {
       if (fz.type === 'rangeColumn' || fz.type === 'rangeBoth') xSplit = Number(focus.column_focus ?? 0) + 1;
       if (xSplit || ySplit) Object.assign(view, { state: 'frozen', xSplit, ySplit });
     }
-    if (sheet.showGridLines === 0 || sheet.showGridLines === '0' || sheet.showGridLines === false) view.showGridLines = false;
+    // Đường lưới luôn hiện trên màn hình; khi xuất dùng lại thiết lập gốc của file (nếu có)
+    const grid = sheet._xtShowGridLines !== undefined ? sheet._xtShowGridLines : sheet.showGridLines;
+    if (grid === 0 || grid === '0' || grid === false) view.showGridLines = false;
     const zoom = Number(sheet.zoomRatio);
     if (zoom && zoom !== 1) view.zoomScale = Math.round(zoom * 100);
     if (Object.keys(view).length) ws.views = [view as ExcelJS.WorksheetView];

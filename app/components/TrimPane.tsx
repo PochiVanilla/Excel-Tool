@@ -74,7 +74,7 @@ export default function TrimPane({
   const total = plan?.rows.length ?? 0;
 
   return (
-    <aside className="task-pane">
+    <aside className="task-pane trim-pane">
       <div className="pane-header">
         <div className="pane-title">
           <span className="pane-icon bg-rose">

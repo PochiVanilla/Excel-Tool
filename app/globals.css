@@ -2005,18 +2005,7 @@ body.is-resizing * {
   color: #504b76 !important;
 }
 
-/* Lưới ô (ô + tiêu đề hàng/cột) được Luckysheet vẽ bằng canvas với nền trắng cố định -> phủ 1 lớp màu lavender
-   của bảng màu ở chế độ multiply: nền trắng thành lavender, chữ / màu ô vẫn giữ gần như nguyên.
-   Không bắt chuột (pointer-events: none); khung chọn ô (z-index cao hơn) vẫn hiện rõ phía trên. */
-#luckysheet-grid-window-1::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  background: #ecebf4;
-  mix-blend-mode: multiply;
-}
+/* Lưới ô giữ nền trắng như Excel (dễ đọc số liệu); ảnh nền chuyển sang khung Cắt gộp (.trim-pane) */
 
 .luckysheet-scrollbar-x::-webkit-scrollbar-thumb,
 .luckysheet-scrollbar-y::-webkit-scrollbar-thumb {
@@ -2066,7 +2055,7 @@ body.is-resizing * {
 .ribbon-group:nth-child(2) { --g: #aa5377; --g-soft: #f6e9ef; }
 .ribbon-group:nth-child(3) { --g: #3f8a93; --g-soft: #e5f1f2; }
 .ribbon-group:nth-child(4) { --g: #3b3759; --g-soft: #e9e8f1; }
-.ribbon-group:nth-child(5) { --g: #6a6781; --g-soft: #eeedf4; }
+.ribbon-group:nth-child(5) { --g: #aa5377; --g-soft: #f6e9ef; }
 
 .ribbon-btn:not(:disabled) svg {
   color: var(--g, var(--acc-slate));
@@ -2218,3 +2207,490 @@ body.is-resizing * {
   background: var(--acc-gradient);
   opacity: 0.85;
 }
+
+/* ==========================================
+   PIVOT: TÔNG "OẢI HƯƠNG" — #D6D4F5 (tiêu đề) · #EFEEFC (dòng tổng, nền nhạt) · chữ tím đậm #2f2a6b
+   Ảnh biển + hoa trắng vẫn làm nền mờ phía sau, phủ lớp oải hương; các thẻ kính mờ
+   ========================================== */
+.pivot-pane {
+  --lav: #d6d4f5;
+  --lav-soft: #efeefc;
+  --lav-line: #c9c5f0;
+  --lav-ink: #2f2a6b;
+  --lav-accent: #6a62d4;
+  --mist: rgba(255, 255, 255, 0.62);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--lav-soft);
+}
+
+.pivot-pane::before {
+  content: "";
+  position: absolute;
+  inset: -16px;
+  z-index: -2;
+  background: url("/pivot-bg.jpg") center / cover no-repeat;
+  filter: blur(5px) saturate(0.9) hue-rotate(28deg);
+}
+
+.pivot-pane::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(239, 238, 252, 0.35) 0%, rgba(230, 228, 250, 0.5) 50%, rgba(214, 212, 245, 0.62) 100%);
+}
+
+.pivot-pane .pane-header,
+.pivot-pane .pane-footer {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: var(--lav-line);
+  backdrop-filter: blur(12px);
+}
+
+.pivot-pane .pane-header::before {
+  background: linear-gradient(90deg, #d6d4f5, #a9a3ec, #6a62d4, #d6d4f5) !important;
+}
+
+.pivot-pane .pane-icon.bg-emerald {
+  background: linear-gradient(135deg, #a9a3ec, #6a62d4) !important;
+  box-shadow: 0 4px 12px rgba(106, 98, 212, 0.35);
+}
+
+.pivot-pane .pane-title-text,
+.pivot-pane .card-head,
+.pivot-pane .field-label {
+  color: var(--lav-ink);
+}
+
+.pivot-pane .card,
+.pivot-pane .scope-card,
+.pivot-pane .pivot-zone,
+.pivot-pane .note,
+.pivot-pane .segmented {
+  background: var(--mist) !important;
+  border-color: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(12px) saturate(1.15);
+  box-shadow: 0 4px 16px rgba(106, 98, 212, 0.1);
+}
+
+.pivot-pane .segmented-item.is-active {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: var(--lav-accent) !important;
+  box-shadow: 0 1px 2px rgba(47, 42, 107, 0.12), inset 0 -2px 0 var(--lav) !important;
+}
+
+.pivot-pane .scope-step {
+  background: var(--lav-accent) !important;
+}
+
+.pivot-pane .field-item:hover,
+.pivot-pane .field-chip:hover {
+  background: rgba(214, 212, 245, 0.55);
+}
+
+.pivot-pane .field-item input[type="checkbox"] {
+  accent-color: var(--lav-accent);
+}
+
+.pivot-pane .field-chip {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: var(--lav-line);
+}
+
+.pivot-pane .pivot-zone.is-over {
+  background: rgba(214, 212, 245, 0.6) !important;
+  border-color: var(--lav-accent) !important;
+}
+
+/* Bảng kết quả giống mẫu: tiêu đề #D6D4F5, dòng trắng, dòng TỔNG #EFEEFC, viền tím nhạt */
+.pivot-pane .result-wrap {
+  background: #fff;
+  border-color: var(--lav-line);
+}
+
+.pivot-pane .result-table th {
+  background: var(--lav) !important;
+  color: var(--lav-ink) !important;
+  font-weight: 700;
+  border-color: var(--lav-line) !important;
+}
+
+.pivot-pane .result-table td {
+  border-color: #e4e2f8 !important;
+}
+
+.pivot-pane .result-table tbody tr:hover td,
+.pivot-pane .result-table tr.is-active td {
+  background: rgba(214, 212, 245, 0.45) !important;
+}
+
+.pivot-pane .result-table tfoot td {
+  background: var(--lav-soft) !important;
+  color: var(--lav-ink) !important;
+  font-weight: 800;
+  border-top: 1px solid var(--lav-line) !important;
+}
+
+.pivot-pane .link-btn {
+  color: var(--lav-accent);
+}
+
+.pivot-pane .xt-btn-primary {
+  background: linear-gradient(135deg, #8f88e0, #5b53c4) !important;
+  box-shadow: 0 4px 12px rgba(91, 83, 196, 0.32);
+}
+
+.pivot-pane .xt-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #8078d8, #4c44b2) !important;
+}
+
+.pivot-pane .xt-btn-ghost {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: var(--lav-line);
+}
+
+/* Nút Pivot trên ribbon cùng tông */
+.ribbon-group:nth-child(4) {
+  --g: #5b53c4 !important;
+  --g-soft: #efeefc !important;
+}
+
+.pivot-pane .pane-body {
+  background: transparent;
+}
+
+.pivot-pane .card-head {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+
+/* ==========================================
+   HIỆU ỨNG KHI BẤM NÚT (app/lib/funClick.ts): dấu chân mèo bay + bong bóng "Meow!"
+   ========================================== */
+.fx-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 6000;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fx-particle {
+  position: absolute;
+  font-size: var(--size, 18px);
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  animation: fx-fly 1.05s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+
+@keyframes fx-fly {
+  0% { transform: translate(-50%, -50%) scale(0.3) rotate(0); opacity: 1; }
+  45% { transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1.1) rotate(calc(var(--rot) * 0.5)); opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--dx) * 1.2), calc(-50% + var(--dy) + 90px)) scale(0.8) rotate(var(--rot)); opacity: 0; }
+}
+
+.fx-bubble {
+  position: absolute;
+  padding: 5px 12px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #2f2a6b;
+  background: #efeefc;
+  border: 2px solid #2f2a6b;
+  border-radius: 14px;
+  box-shadow: 0 4px 0 #2f2a6b;
+  white-space: nowrap;
+  transform: translate(-50%, -100%) scale(0);
+  animation: fx-pop 1.25s cubic-bezier(0.3, 1.6, 0.5, 1) forwards;
+}
+
+.fx-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 12px;
+  height: 12px;
+  background: #efeefc;
+  border-right: 2px solid #2f2a6b;
+  border-bottom: 2px solid #2f2a6b;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+@keyframes fx-pop {
+  0% { transform: translate(-50%, -100%) scale(0) rotate(0); opacity: 1; }
+  20% { transform: translate(-50%, -120%) scale(1.15) rotate(var(--tilt)); }
+  35% { transform: translate(-50%, -120%) scale(1) rotate(var(--tilt)); }
+  75% { transform: translate(-50%, -150%) scale(1) rotate(calc(var(--tilt) * -0.5)); opacity: 1; }
+  100% { transform: translate(-50%, -190%) scale(0.85); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fx-layer { display: none; }
+}
+
+/* ==========================================
+   CẮT GỘP: ẢNH NỀN "ĐÊM SAO - BẦU TRỜI XOÁY VÀNG" mờ phía sau, các thẻ kính mờ
+   xanh đêm #1f3a6b (chữ / nhấn) · vàng xoáy #f4c430 (điểm nhấn) · tím mây #7c6fb0
+   ========================================== */
+.trim-pane {
+  --night: #1f3a6b;
+  --night-soft: #e8edf7;
+  --gold: #f4c430;
+  --gold-deep: #c99a06;
+  --mist: rgba(255, 255, 255, 0.64);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #eef1f8;
+}
+
+.trim-pane::before {
+  content: "";
+  position: absolute;
+  inset: -16px;
+  z-index: -2;
+  background: url("/trim-bg.jpg") 72% center / cover no-repeat;
+  filter: blur(3px) saturate(1.15);
+}
+
+.trim-pane::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(238, 241, 248, 0.32) 55%, rgba(238, 241, 248, 0.5) 100%);
+}
+
+.trim-pane .pane-body {
+  background: transparent;
+}
+
+.trim-pane .pane-header,
+.trim-pane .pane-footer {
+  background: rgba(255, 255, 255, 0.6);
+  border-color: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+}
+
+.trim-pane .pane-header::before {
+  background: linear-gradient(90deg, #1f3a6b, #7c6fb0, #f4c430, #1f3a6b) !important;
+}
+
+.trim-pane .pane-icon.bg-rose {
+  background: linear-gradient(135deg, #f4c430, #1f3a6b) !important;
+  box-shadow: 0 4px 12px rgba(31, 58, 107, 0.35);
+}
+
+.trim-pane .pane-title-text,
+.trim-pane .card-head,
+.trim-pane .field-label {
+  color: var(--night);
+}
+
+.trim-pane .card,
+.trim-pane .note,
+.trim-pane .segmented,
+.trim-pane .radio-card,
+.trim-pane .block-list {
+  background: var(--mist) !important;
+  border-color: rgba(255, 255, 255, 0.75) !important;
+  backdrop-filter: blur(12px) saturate(1.15);
+  box-shadow: 0 4px 16px rgba(31, 58, 107, 0.1);
+}
+
+.trim-pane .card-head {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.trim-pane .segmented-item.is-active,
+.trim-pane .radio-card.is-active {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: var(--night) !important;
+  box-shadow: 0 1px 2px rgba(31, 58, 107, 0.12), inset 0 -2px 0 var(--gold) !important;
+}
+
+.trim-pane .check-row:hover {
+  background: rgba(244, 196, 48, 0.16);
+}
+
+.trim-pane .check-row input[type="checkbox"],
+.trim-pane input[type="radio"] {
+  accent-color: var(--night);
+}
+
+.trim-pane .xt-btn-ghost {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(31, 58, 107, 0.2);
+}
+
+/* Nút Cắt gộp trên ribbon cùng tông đêm sao */
+.ribbon-group:nth-child(3) {
+  --g: #1f3a6b !important;
+  --g-soft: #fdf3d2 !important;
+}
+
+
+
+
+/* ==========================================
+   STICKER MÈO THAY ICON TRÊN NÚT RIBBON (components/CatMascot.tsx)
+   bình thường hiện ảnh đứng (khung hình đầu), rê chuột vào thì chạy GIF
+   ========================================== */
+.ribbon-btn {
+  height: 92px;
+  gap: 2px;
+}
+
+.ribbon-btn .mascot {
+  position: relative;
+  flex-shrink: 0;
+  width: 76px;
+  height: 56px;
+  pointer-events: none;
+  transition: transform 0.18s, filter 0.2s, opacity 0.2s;
+}
+
+.mascot img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  user-select: none;
+}
+
+.mascot .m-gif {
+  opacity: 0;
+}
+
+.ribbon-btn:hover:not(:disabled) .mascot .m-gif {
+  opacity: 1;
+}
+
+.ribbon-btn:hover:not(:disabled) .mascot .m-still {
+  opacity: 0;
+}
+
+.ribbon-btn:hover:not(:disabled) .mascot {
+  transform: scale(1.15) translateY(-2px);
+}
+
+.ribbon-btn:disabled .mascot {
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+/* ==========================================
+   MÈO ĐỒNG HÀNH (components/CatBuddy.tsx) — góc dưới trái, phản ứng theo công việc
+   ========================================== */
+.cat-buddy {
+  position: fixed;
+  left: 54px;
+  bottom: 64px;
+  z-index: 5500;
+  width: 82px;
+}
+
+.cat-buddy-btn {
+  display: block;
+  width: 82px;
+  height: 78px;
+  padding: 0;
+  background: none;
+  border: 0;
+  filter: drop-shadow(0 6px 10px rgba(40, 37, 70, 0.22));
+  transition: transform 0.18s;
+  animation: buddy-in 0.5s cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+
+.cat-buddy-btn:hover {
+  transform: translateY(-4px) scale(1.05);
+}
+
+.cat-buddy-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  user-select: none;
+}
+
+@keyframes buddy-in {
+  from { transform: translateY(40px) scale(0.6); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.cat-buddy-hide {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  line-height: 1;
+  color: #6a6781;
+  background: #fff;
+  border: 1px solid #d6d4f5;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.cat-buddy:hover .cat-buddy-hide {
+  opacity: 1;
+}
+
+.cat-buddy-say {
+  position: absolute;
+  left: 62px;
+  bottom: 64px;
+  width: max-content;
+  max-width: 260px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+  color: #2f2a6b;
+  background: #fff;
+  border: 2px solid #2f2a6b;
+  border-radius: 14px 14px 14px 4px;
+  box-shadow: 0 4px 0 #2f2a6b;
+  animation: buddy-say 0.35s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes buddy-say {
+  from { transform: scale(0.4) translateY(10px); transform-origin: 0 100%; opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.cat-buddy-show {
+  position: fixed;
+  left: 54px;
+  bottom: 66px;
+  z-index: 5500;
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  background: #fff;
+  border: 1px solid #d6d4f5;
+  border-radius: 50%;
+  box-shadow: 0 4px 12px rgba(40, 37, 70, 0.15);
+}
+
+/* Màn hình chờ: mèo nhâm nhi cà phê thay vòng quay */
+.loading-cat {
+  width: 150px;
+  height: 150px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 14px rgba(40, 37, 70, 0.2));
+}
+

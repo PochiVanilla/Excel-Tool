@@ -5,6 +5,9 @@ import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 
 import Icon from './components/Icon';
+import CatMascot from './components/CatMascot';
+import { catReact, catReset } from './components/CatBuddy';
+import dynamic from 'next/dynamic';
 import StatusBar, { SelectionStats } from './components/StatusBar';
 import TrimPane, { TemplateInfo, TrimStrategy } from './components/TrimPane';
 import PivotPane, { formatByPattern } from './components/PivotPane';
@@ -17,7 +20,8 @@ import { ToastStack, useToasts } from './components/Toasts';
 import { exportWorkbookBuffer } from './lib/exportWorkbook';
 import { FabricInvoice, buildFabricWorkbook, groupLines, parseFabricInvoice } from './lib/pdfInvoice';
 import { readPdfText } from './lib/pdfReader';
-import { assignPages, isInvoiceOnly } from './lib/pdfSplit';
+import { buildTableWorkbook, extractTable } from './lib/pdfTable';
+import { SplitPage, assignPages, buildOutputs, isInvoiceOnly } from './lib/pdfSplit';
 import { useSplitPdf } from './lib/useSplitPdf';
 import {
   buildPivotSource,
@@ -52,8 +56,19 @@ import {
   autoFitRowHeight,
 } from './lib/lucky';
 import { ContextAction, autoFitColumns, installSheetInteractions, InteractionHandlers } from './lib/sheetInteractions';
+import { installFunClicks } from './lib/funClick';
 import { LuckyValue, getCellNumber, getCellText, getCleanedRangeText, getRangeText, rangeName } from './lib/sheetText';
 import { AutoTrimOptions, TrimBlock, TrimPlan, planAutoTrim, planBlankRows, planRpacTrim, planTemplateTrim } from './lib/trimEngine';
+
+// Tách PDF xong -> mèo đồng hành khoe kết quả và giữ trạng thái tới khi tạo trang Excel mới
+const announceSplit = (pages: SplitPage[]) => {
+  const { assigns, segments } = assignPages(pages);
+  const files = buildOutputs(assigns, segments, 'type').length;
+  catReact('success', `Tách xong ${pages.length} trang thành ${files} file PDF rồi nè! 😎`, { sticky: true });
+};
+
+// Mèo đồng hành chỉ chạy phía trình duyệt (nhớ ẩn / hiện trong localStorage)
+const CatBuddy = dynamic(() => import('./components/CatBuddy'), { ssr: false });
 
 type Pane = 'trim' | 'pivot' | 'pdf' | 'split' | null;
 type PdfState = { fileName: string; invoice: FabricInvoice | null; error: string | null; rawLines: string[] };
@@ -116,6 +131,7 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const openPdfRef = useRef<(file: File) => void>(() => {});
+  const openPivotRef = useRef<(fromSelection: boolean) => void>(() => {});
   const splitInputRef = useRef<HTMLInputElement>(null);
   const routePdfRef = useRef<(file: File) => void>(() => {});
   // Nghiệp vụ + danh sách trường của bố cục Pivot hiện tại -> đổi nghiệp vụ / đổi bảng thì dùng bố cục mặc định mới
@@ -186,6 +202,8 @@ export default function Home() {
   const createSheet = useCallback((sheets?: LuckyValue[], title?: string) => {
     const l = ls();
     if (!l) return;
+    // Trang Excel mới -> mèo đồng hành về trạng thái ban đầu
+    catReset();
     setReady(false);
     try {
       l.destroy();
@@ -202,7 +220,12 @@ export default function Home() {
       showstatisticBarConfig: { count: false, view: false, zoom: false },
       enableAddRow: true,
       enableAddBackTop: true,
-      data: sheets && sheets.length ? sheets : [{ name: 'Sheet1', status: 1, order: 0, index: 0, celldata: [], config: {} }],
+      // Luôn hiện đường lưới trên màn hình (nằm trên hình nền); thiết lập lưới gốc của file giữ trong _xtShowGridLines để xuất lại đúng
+      data: (sheets && sheets.length ? sheets : [{ name: 'Sheet1', status: 1, order: 0, index: 0, celldata: [], config: {} }]).map((s: LuckyValue) => ({
+        ...s,
+        _xtShowGridLines: s._xtShowGridLines ?? s.showGridLines ?? 1,
+        showGridLines: 1,
+      })),
       hook: {
         rangeSelect: (_sheet: LuckyValue, range: LuckyValue) => handlersRef.current.onRangeSelect(range),
         cellRenderAfter: overlayHooks.cellRenderAfter,
@@ -388,7 +411,9 @@ export default function Home() {
   );
 
   // ==========================================
-  // ĐỌC PDF COMMERCIAL INVOICE VẢI -> BẢNG "TRÍCH INV VẢI" (mở luôn trên bảng tính)
+  // ĐỌC PDF -> EXCEL (mở luôn trên bảng tính)
+  // - Commercial Invoice vải Polytex -> bảng "TRÍCH INV VẢI"
+  // - Hoá đơn VAT / chứng từ khác có bảng hàng (STT / Số lượng / Thành tiền) -> trích bảng theo đường kẻ cột, rồi mở Pivot
   // ==========================================
   const openPdf = useCallback(
     async (file: File) => {
@@ -400,7 +425,7 @@ export default function Home() {
         setPane('pdf');
       };
       try {
-        const { items, pageCount, imageOnlyPages } = await readPdfText(file);
+        const { items, pageCount, imageOnlyPages, rules } = await readPdfText(file, { withRules: true });
         if (imageOnlyPages === pageCount) {
           return fail('PDF này là ảnh scan (không có lớp chữ) nên chưa đọc được. Hãy dùng file PDF xuất trực tiếp từ hệ thống (bôi đen được chữ).');
         }
@@ -408,10 +433,33 @@ export default function Home() {
         const invoice = parseFabricInvoice(lines, pageCount);
         const rawLines = lines.map((l) => `[trang ${l.page}] ${l.text}`);
         if (invoice.rows.length === 0) {
-          return fail(
-            'Không nhận ra bảng hàng của Commercial Invoice vải (cần có cột DESCRIPTION OF GOODS / QUANTITY / PRICE / AMOUNT và các mã hàng "#..."). Xem chữ đọc được bên dưới.',
-            rawLines,
-          );
+          // Không phải invoice vải -> trích bảng hàng chung (hoá đơn VAT, invoice / chứng từ khác) rồi mở Pivot để làm tiếp
+          const table = extractTable(items, rules, pageCount);
+          if (!table) {
+            return fail(
+              'Không nhận ra bảng hàng trong PDF này (cần dòng tiêu đề có STT / Số lượng / Thành tiền, hoặc Commercial Invoice vải có mã hàng "#..."). Xem chữ đọc được bên dưới.',
+              rawLines,
+            );
+          }
+          const tableBuffer = await buildTableWorkbook(table, 'Data').xlsx.writeBuffer();
+          const tableFile = new File([tableBuffer], `${file.name.replace(/\.pdf$/i, '')}.xlsx`, {
+            type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          });
+          const itemCount = table.rows.filter((r) => r.kind === 'item').length;
+          setLoading('');
+          openFile(tableFile, {
+            skipConfirm: true,
+            dirty: true,
+            onLoaded: () => {
+              setPdfState(null);
+              toast('success', `Đã trích ${itemCount} dòng hàng từ ${file.name} ra Excel — mở Pivot để tổng hợp.`);
+              window.setTimeout(() => {
+                for (let r = 0; r <= table.intro.length + table.rows.length + 2; r++) autoFitRowHeight(r);
+                openPivotRef.current(false);
+              }, 400);
+            },
+          });
+          return;
         }
         const buffer = await buildFabricWorkbook(invoice).xlsx.writeBuffer();
         const name = `TRICH_INV_VAI_${invoice.invoiceNo || file.name.replace(/\.pdf$/i, '')}.xlsx`;
@@ -441,7 +489,7 @@ export default function Home() {
         fail(`Lỗi đọc PDF: ${(err as Error)?.message || err}`);
       }
     },
-    [openFile],
+    [openFile, toast],
   );
   useLayoutEffect(() => {
     openPdfRef.current = openPdf;
@@ -457,6 +505,7 @@ export default function Home() {
       if (!st) return;
       clearOverlay();
       setPane('split');
+      announceSplit(st.pages);
     },
     [loadSplit],
   );
@@ -472,6 +521,7 @@ export default function Home() {
       }
       clearOverlay();
       setPane('split');
+      announceSplit(st.pages);
     },
     [loadSplit, openPdf],
   );
@@ -610,7 +660,12 @@ export default function Home() {
 
   const openPivot = useCallback(
     (fromSelection: boolean) => {
-      if (!stateRef.current.hasFile) return toast('info', 'Hãy mở file hoá đơn Excel trước.');
+      if (!stateRef.current.hasFile) {
+        return toast(
+          'info',
+          'Chưa có bảng Excel để Pivot. Mở file Excel, hoặc ở Tách PDF bấm nút bảng (Trích Excel) ở file VAT / INV để trích ra Excel trước.',
+        );
+      }
       const sel = getSelection()[0];
       // Giống Insert PivotTable của Excel: có vùng chọn nhiều hàng thì dùng vùng chọn, không thì tự nhận diện cả sheet
       const scope = sel && (fromSelection || sel.row[1] - sel.row[0] >= 2) ? { r1: sel.row[0], r2: sel.row[1] } : null;
@@ -623,6 +678,9 @@ export default function Home() {
     },
     [scanPivot, toast],
   );
+  useLayoutEffect(() => {
+    openPivotRef.current = openPivot;
+  });
 
   const pivotResult: PivotResult | null = useMemo(
     () => (pivotSource ? computePivot(pivotSource, pivotLayout) : null),
@@ -664,11 +722,12 @@ export default function Home() {
         },
       });
     };
-    // Tông tím pastel cho sheet Pivot: tiêu đề tím #E0B0FF, dòng xen kẽ tím rất nhạt, dòng tổng tím vừa
-    columns.forEach((col, c) => put(0, c, col.label, { bl: 1, bg: '#e0b0ff', fc: '#3f1560', ht: 0, tb: 2 }));
-    rows.forEach((row, ri) => row.cells.forEach((v, c) => put(ri + 1, c, v, ri % 2 === 1 ? { bg: '#f7edff' } : {})));
+    // Tông "oải hương" cho sheet Pivot: tiêu đề #D6D4F5 chữ tím đậm, dòng hàng nền trắng, dòng TỔNG #EFEEFC chữ tím đậm,
+    // viền tím nhạt, viền trên dòng tổng tím vừa
+    columns.forEach((col, c) => put(0, c, col.label, { bl: 1, bg: '#d6d4f5', fc: '#2f2a6b', ht: 0, tb: 2 }));
+    rows.forEach((row, ri) => row.cells.forEach((v, c) => put(ri + 1, c, v, {})));
     const totalRow = rows.length + 1;
-    grandTotal.forEach((v, c) => put(totalRow, c, v, { bl: 1, bg: '#ecd4ff', fc: '#3f1560' }));
+    grandTotal.forEach((v, c) => put(totalRow, c, v, { bl: 1, bg: '#efeefc', fc: '#2f2a6b' }));
     const lastCol = columns.length - 1;
     const sheetObject = {
       name: pivotSheetName(pivotSource.profile),
@@ -677,8 +736,8 @@ export default function Home() {
         columnlen: Object.fromEntries(widths.map((w, i) => [i, w])),
         rowlen: { 0: 36 },
         borderInfo: [
-          { rangeType: 'range', borderType: 'border-all', style: '1', color: '#d6a4f5', range: [{ row: [0, totalRow], column: [0, lastCol] }] },
-          { rangeType: 'range', borderType: 'border-top', style: '7', color: '#a86ad6', range: [{ row: [totalRow, totalRow], column: [0, lastCol] }] },
+          { rangeType: 'range', borderType: 'border-all', style: '1', color: '#c9c5f0', range: [{ row: [0, totalRow], column: [0, lastCol] }] },
+          { rangeType: 'range', borderType: 'border-top', style: '7', color: '#8f88e0', range: [{ row: [totalRow, totalRow], column: [0, lastCol] }] },
         ],
       },
       frozen: { type: 'row' },
@@ -697,6 +756,9 @@ export default function Home() {
       clearOverlay();
       setPane(null);
       toast('success', `Đã xuất Pivot sang sheet "${sheetObject.name}" · ${rows.length} dòng. Bấm Tải xuống để lưu file.`);
+      // Vừa tạo trang Excel mới -> ăn mừng vài giây rồi mèo về trạng thái ban đầu
+      catReset();
+      catReact('success', 'Tạo sheet Pivot mới xong! 🎉');
     } catch (err) {
       toast('error', `Lỗi khi tạo sheet mới: ${(err as Error)?.message || err}`);
     }
@@ -854,6 +916,8 @@ export default function Home() {
   }, [applyZoom, exportFile, openFile, runContextAction, refreshStats, pushUndo, showHelp, markChanged, toast, reloadWorkbook]);
 
   useEffect(() => installSheetInteractions(interactionRef), []);
+  // Hiệu ứng vui khi bấm nút (nảy nút, chuối bay, bong bóng chữ, bạn tròn vàng)
+  useEffect(() => installFunClicks(), []);
 
   // Kéo giãn task pane bằng chuột (double-click mép để về mặc định)
   const startPaneResize = (e: React.MouseEvent) => {
@@ -955,12 +1019,8 @@ export default function Home() {
         <div className="ribbon-group">
           <div className="ribbon-buttons">
             <button className="ribbon-btn" onClick={() => fileInputRef.current?.click()} title="Mở file Excel (Ctrl+O) — hoặc kéo thả file vào cửa sổ">
-              <Icon name="upload" size={26} />
+              <CatMascot kind="open" />
               <span>Mở file</span>
-            </button>
-            <button className="ribbon-btn is-accent" onClick={exportFile} disabled={!hasFile} title="Tải xuống file đã xử lý (Ctrl+S)">
-              <Icon name="download" size={26} />
-              <span>Tải xuống</span>
             </button>
           </div>
           <div className="ribbon-caption">Tệp</div>
@@ -973,7 +1033,7 @@ export default function Home() {
               onClick={() => pdfInputRef.current?.click()}
               title="Đọc Commercial Invoice vải (PDF) và trích ra bảng Excel: STT | Item | Thành phần & khổ | SL | Đơn giá | Trị giá"
             >
-              <Icon name="file" size={26} />
+              <CatMascot kind="pdf" />
               <span>Đọc PDF</span>
             </button>
             <button
@@ -987,7 +1047,7 @@ export default function Home() {
               }}
               title="Tách bộ chứng từ PDF theo tiêu đề trang — xuất TKX, SC, ANNEX, INV, PKL, VAT, Other; trang scan gom vào SCAN.pdf"
             >
-              <Icon name="layers" size={26} />
+              <CatMascot kind="split" />
               <span>Tách PDF</span>
             </button>
           </div>
@@ -1002,11 +1062,11 @@ export default function Home() {
               disabled={!hasFile}
               title="Xoá header/footer lặp lại khi gộp nhiều trang hoá đơn"
             >
-              <Icon name="scissors" size={26} />
+              <CatMascot kind="trim" />
               <span>Cắt gộp</span>
             </button>
             <button className="ribbon-btn" onClick={undo} disabled={!lastUndo} title={lastUndo ? `Hoàn tác: ${lastUndo.label}` : 'Chưa có thao tác để hoàn tác'}>
-              <Icon name="undo" size={26} />
+              <CatMascot kind="undo" />
               <span>Hoàn tác</span>
             </button>
           </div>
@@ -1018,24 +1078,24 @@ export default function Home() {
             <button
               className={`ribbon-btn ${pane === 'pivot' ? 'is-on' : ''}`}
               onClick={() => (pane === 'pivot' ? closePane() : openPivot(false))}
-              disabled={!hasFile}
               title="Tổng hợp như PivotTable (tự nhận diện hoá đơn Polytex, chỉ may, hoá đơn chung; không nhận ra thì Pivot thủ công theo dòng tiêu đề)"
             >
-              <Icon name="pivot" size={26} />
+              <CatMascot kind="pivot" />
               <span>Pivot</span>
             </button>
           </div>
           <div className="ribbon-caption">Phân tích</div>
         </div>
 
+        {/* Tải xuống đặt cuối cùng: bước sau cùng của quy trình (mở -> cắt gộp -> pivot -> tải) */}
         <div className="ribbon-group">
           <div className="ribbon-buttons">
-            <button className="ribbon-btn" onClick={() => setShowHelp(true)} title="Thao tác chuột & phím tắt (F1)">
-              <Icon name="keyboard" size={26} />
-              <span>Phím tắt</span>
+            <button className="ribbon-btn is-accent" onClick={exportFile} disabled={!hasFile} title="Tải xuống file đã xử lý (Ctrl+S)">
+              <CatMascot kind="download" />
+              <span>Tải xuống</span>
             </button>
           </div>
-          <div className="ribbon-caption">Trợ giúp</div>
+          <div className="ribbon-caption">Lưu</div>
         </div>
       </nav>
 
@@ -1140,7 +1200,7 @@ export default function Home() {
               <SplitPane
                 split={split}
                 onPickFile={() => splitInputRef.current?.click()}
-                onExtractInvoice={async (o) => {
+                onExtract={async (o) => {
                   const file = await split.outputFile(o);
                   if (file) openPdf(file);
                 }}
@@ -1226,12 +1286,14 @@ export default function Home() {
 
       {loading && (
         <div className="loading-overlay">
-          <div className="spinner" />
+          {/* eslint-disable-next-line @next/next/no-img-element -- sticker động giữ nguyên file gốc */}
+          <img className="loading-cat" src="/mascots/r-wait.gif" alt="" />
           <div className="loading-text">{loading}</div>
         </div>
       )}
 
       <ToastStack toasts={toasts} dismiss={dismiss} />
+      <CatBuddy />
     </div>
   );
 }

@@ -8,12 +8,13 @@ import { SplitOutput, pageRanges } from '../lib/pdfSplit';
 export default function SplitPane({
   split,
   onPickFile,
-  onExtractInvoice,
+  onExtract,
   onClose,
 }: {
   split: SplitController;
   onPickFile: () => void;
-  onExtractInvoice: (o: SplitOutput) => void;
+  // Trích bảng hàng của file PDF này ra Excel (Commercial Invoice vải / hoá đơn VAT / chứng từ có bảng hàng) -> Pivot
+  onExtract: (o: SplitOutput) => void;
   onClose: () => void;
 }) {
   const { state, outputs, assigns, ocr, busy } = split;
@@ -152,8 +153,8 @@ export default function SplitPane({
                   </div>
                 </div>
                 <div className="split-output-actions">
-                  {o.target === 'commercial-invoice' && (
-                    <button className="icon-btn" onClick={() => onExtractInvoice(o)} title="Trích Commercial Invoice này ra bảng Excel (TRICH_INV_VAI)">
+                  {o.target !== 'scan' && (
+                    <button className="icon-btn" onClick={() => onExtract(o)} title="Trích bảng hàng của file này ra Excel để Cắt gộp / Pivot">
                       <Icon name="table" size={15} />
                     </button>
                   )}

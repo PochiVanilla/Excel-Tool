@@ -3,6 +3,7 @@
 // ==========================================
 import type { PdfTextItem } from './pdfInvoice';
 import type { SplitLine, SplitPage } from './pdfSplit';
+import type { VRule } from './pdfTable';
 import type { LuckyValue } from './sheetText';
 
 const PDFJS_VERSION = '3.11.174';
@@ -168,14 +169,79 @@ export interface PdfTextResult {
   pageCount: number;
   // Số trang không có lớp chữ (PDF dạng ảnh scan)
   imageOnlyPages: number;
+  // Đường kẻ dọc của bảng (chỉ đọc khi cần: withRules)
+  rules: VRule[];
 }
 
-export const readPdfText = async (file: File): Promise<PdfTextResult> => {
+// Đường kẻ dọc của bảng (toạ độ trang PDF, gốc dưới-trái giống chữ) -> dùng để chia cột khi trích bảng ra Excel
+const readVerticalRules = async (pdfjs: LuckyValue, page: LuckyValue, pageNo: number): Promise<VRule[]> => {
+  const OPS = pdfjs.OPS;
+  const ops = await page.getOperatorList();
+  const rules: VRule[] = [];
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack: number[][] = [];
+  const pt = (x: number, y: number) => pdfjs.Util.applyTransform([x, y], ctm) as number[];
+  const addSeg = (a: number[], b: number[]) => {
+    if (Math.abs(a[0] - b[0]) < 1.2 && Math.abs(a[1] - b[1]) > 6) {
+      rules.push({ page: pageNo, x: (a[0] + b[0]) / 2, y0: Math.min(a[1], b[1]), y1: Math.max(a[1], b[1]) });
+    }
+  };
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+    else if (fn === OPS.transform) ctm = pdfjs.Util.transform(ctm, args);
+    else if (fn === OPS.paintFormXObjectBegin) {
+      stack.push(ctm);
+      const m = args?.[0] as number[] | null;
+      if (m && m.length >= 6) ctm = pdfjs.Util.transform(ctm, m);
+    } else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    else if (fn === OPS.constructPath) {
+      const pathOps = args[0] as number[];
+      const coords = args[1] as number[];
+      let k = 0;
+      let cur: number[] | null = null;
+      for (const op of pathOps) {
+        if (op === OPS.moveTo) {
+          cur = pt(coords[k], coords[k + 1]);
+          k += 2;
+        } else if (op === OPS.lineTo) {
+          const next = pt(coords[k], coords[k + 1]);
+          k += 2;
+          if (cur) addSeg(cur, next);
+          cur = next;
+        } else if (op === OPS.curveTo) k += 6;
+        else if (op === OPS.curveTo2 || op === OPS.curveTo3) k += 4;
+        else if (op === OPS.rectangle) {
+          const [x, y, w, h] = coords.slice(k, k + 4);
+          k += 4;
+          const a = pt(x, y);
+          const b = pt(x + w, y + h);
+          const width = Math.abs(b[0] - a[0]);
+          const height = Math.abs(b[1] - a[1]);
+          if (height > 6) {
+            // Hình chữ nhật mảnh = 1 đường kẻ; ô có viền = 2 cạnh trái / phải
+            if (width < 2.5) rules.push({ page: pageNo, x: (a[0] + b[0]) / 2, y0: Math.min(a[1], b[1]), y1: Math.max(a[1], b[1]) });
+            else {
+              addSeg([a[0], a[1]], [a[0], b[1]]);
+              addSeg([b[0], a[1]], [b[0], b[1]]);
+            }
+          }
+        }
+      }
+    }
+  }
+  return rules;
+};
+
+export const readPdfText = async (file: File, opts: { withRules?: boolean } = {}): Promise<PdfTextResult> => {
   const pdfjs = await loadPdfJs();
   const data = new Uint8Array(await file.arrayBuffer());
   const doc = await pdfjs.getDocument({ data }).promise;
   const pageCount: number = doc.numPages;
   const items: PdfTextItem[] = [];
+  const rules: VRule[] = [];
   let imageOnlyPages = 0;
   for (let p = 1; p <= pageCount; p++) {
     const page = await doc.getPage(p);
@@ -187,8 +253,9 @@ export const readPdfText = async (file: File): Promise<PdfTextResult> => {
       items.push({ str: it.str, x: it.transform[4], y: it.transform[5], w: it.width, page: p });
     }
     if (count === 0) imageOnlyPages++;
+    else if (opts.withRules) rules.push(...(await readVerticalRules(pdfjs, page, p)));
     page.cleanup();
   }
   await doc.destroy();
-  return { items, pageCount, imageOnlyPages };
+  return { items, pageCount, imageOnlyPages, rules };
 };

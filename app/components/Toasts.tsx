@@ -3,6 +3,7 @@
 // Thông báo nổi góc dưới (thay cho alert chặn màn hình), có thể kèm nút hành động (vd: Hoàn tác)
 import { useCallback, useRef, useState } from 'react';
 import Icon from './Icon';
+import { catReact } from './CatBuddy';
 
 export type ToastTone = 'success' | 'error' | 'info' | 'warn';
 
@@ -23,6 +24,11 @@ export const useToasts = () => {
     (tone: ToastTone, text: string, action?: Toast['action'], ms = 4500) => {
       const id = ++seq.current;
       setToasts((list) => [...list.slice(-3), { id, tone, text, action }]);
+      // Mèo đồng hành phản ứng theo loại thông báo: kết quả công việc (thành công / lỗi / cảnh báo) được GIỮ tới khi
+      // tạo trang Excel mới; lời nhắc (info) chỉ hiện vài giây
+      catReact(tone === 'success' ? 'success' : tone === 'error' ? 'error' : tone === 'warn' ? 'please' : 'hmm', undefined, {
+        sticky: tone !== 'info',
+      });
       window.setTimeout(() => dismiss(id), action ? ms + 3500 : ms);
     },
     [dismiss],

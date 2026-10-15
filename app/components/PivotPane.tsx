@@ -6,6 +6,7 @@
 // - Kết quả cập nhật trực tiếp; nhấp 1 dòng kết quả để soi các dòng nguồn trên bảng tính, nhấp đúp để nhảy tới
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
+import { catReact } from './CatBuddy';
 import {
   AGG_LABELS,
   PivotAgg,
@@ -89,6 +90,16 @@ export default function PivotPane({
   const activeRow = active && active.result === result ? active.row : null;
   const [showSkipped, setShowSkipped] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Mèo đồng hành báo kết quả đối chiếu tổng của Pivot (khớp -> khoe, lệch -> năn nỉ kiểm tra lại)
+  const checkKey = result ? `${result.check.quantity}|${result.check.amount}|${result.totals.quantity}|${result.totals.amount}` : '';
+  useEffect(() => {
+    if (!checkKey) return;
+    const [q, a] = checkKey.split('|');
+    // Giữ trạng thái tới khi tạo trang Excel mới (vd: Xuất sang sheet mới)
+    if (q === 'diff' || a === 'diff') catReact('please', 'Pivot lệch tổng hoá đơn, kiểm tra lại giúp mèo nha 🥺', { sticky: true });
+    else if (q === 'ok' || a === 'ok') catReact('success', 'Pivot khớp tổng hoá đơn rồi! 😎', { sticky: true });
+  }, [checkKey]);
 
   useEffect(() => {
     if (!menu) return;
@@ -264,7 +275,7 @@ export default function PivotPane({
   );
 
   return (
-    <aside className="task-pane">
+    <aside className="task-pane pivot-pane">
       <div className="pane-header">
         <div className="pane-title">
           <span className="pane-icon bg-emerald">
